@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Join our Left 4 Dead 2 server</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@700;900&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --wall: #d3d4cf;
+    --wall-grain: #c6c7c1;
+    --paper: #eceee9;
+    --ink: #1d2124;
+    --ink-soft: #4a5156;
+    --line: #a9aba4;
+    --paint: #a3261d;
+    --paint-ink: #ffffff;
+    --go: #2f7d3a;
+    --code-bg: #20262a;
+    --code-ink: #e8ece6;
+    --focus: #1f5fbf;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --wall: #1e2225;
+      --wall-grain: #23282b;
+      --paper: #2a3034;
+      --ink: #e7e9e4;
+      --ink-soft: #aab1b4;
+      --line: #454d52;
+      --paint: #d9463a;
+      --paint-ink: #ffffff;
+      --go: #5cbf69;
+      --code-bg: #121517;
+      --code-ink: #e8ece6;
+      --focus: #7fb0ff;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --wall: #1e2225; --wall-grain: #23282b; --paper: #2a3034; --ink: #e7e9e4; --ink-soft: #aab1b4;
+    --line: #454d52; --paint: #d9463a; --paint-ink: #ffffff; --go: #5cbf69; --code-bg: #121517;
+    --code-ink: #e8ece6; --focus: #7fb0ff; color-scheme: dark;
+  }
+
+  :root { box-sizing: border-box; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  *, *::before, *::after { box-sizing: inherit; }
+
+  body {
+    margin: 0;
+    background-color: var(--wall);
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0 119px, var(--wall-grain) 119px 121px),
+      repeating-linear-gradient(90deg, transparent 0 239px, var(--wall-grain) 239px 241px);
+    color: var(--ink);
+    font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 1.0625rem;
+    line-height: 1.55;
+  }
+  main { max-width: 42rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+
+  /* ---------- hero: the stencilled safe-room wall ---------- */
+  .hero { margin-bottom: 2.25rem; }
+  .hero h1 {
+    font-family: "Big Shoulders Stencil Display", "Impact", "Arial Narrow", sans-serif;
+    font-weight: 900;
+    font-size: clamp(3rem, 12vw, 5.5rem);
+    line-height: 0.88;
+    letter-spacing: 0.01em;
+    color: var(--paint);
+    margin: 0 0 1rem;
+    transform: rotate(-1.5deg);
+    transform-origin: left bottom;
+    text-shadow: 0 0 1px var(--paint);
+  }
+  .hero p { margin: 0; max-width: 34rem; color: var(--ink-soft); font-size: 1.125rem; }
+
+  .door {
+    display: flex; align-items: center; gap: 0.75rem;
+    margin-top: 1.5rem; padding: 0.75rem 1rem;
+    background: var(--paper); border: 2px solid var(--line); border-radius: 4px;
+    font-weight: 700;
+  }
+  .lamp {
+    width: 1.1rem; height: 1.1rem; border-radius: 50%; flex: none;
+    background: var(--paint); box-shadow: 0 0 0 3px color-mix(in srgb, var(--paint) 25%, transparent);
+    transition: background 0.4s, box-shadow 0.4s;
+  }
+  .door.open .lamp { background: var(--go); box-shadow: 0 0 0 3px color-mix(in srgb, var(--go) 25%, transparent), 0 0 14px var(--go); }
+  .door .meter { margin-left: auto; font-weight: 400; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+  /* ---------- details form ---------- */
+  .details {
+    background: var(--paper); border: 2px solid var(--line); border-radius: 4px;
+    padding: 1.25rem; margin-bottom: 2.5rem;
+  }
+  .details h2 { margin: 0 0 0.25rem; font-size: 1.25rem; }
+  .details > p { margin: 0 0 1rem; color: var(--ink-soft); }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 34rem) { .fields { grid-template-columns: 1fr; } }
+  label { display: block; font-weight: 700; margin-bottom: 0.3rem; }
+  label small { font-weight: 400; color: var(--ink-soft); }
+  input[type="text"] {
+    width: 100%; padding: 0.6rem 0.7rem; font: inherit;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 1rem;
+    color: var(--ink); background: var(--wall); border: 2px solid var(--line); border-radius: 3px;
+  }
+  input[type="text"]:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; border-color: transparent; }
+
+  /* ---------- steps ---------- */
+  ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .step { position: relative; padding: 0 0 2.25rem 3.75rem; counter-increment: step; }
+  .step::before {
+    content: counter(step);
+    position: absolute; left: 0; top: -0.2rem;
+    width: 2.6rem; height: 2.6rem; display: grid; place-items: center;
+    font-family: "Big Shoulders Stencil Display", "Impact", sans-serif; font-weight: 900; font-size: 1.6rem;
+    color: var(--paint-ink); background: var(--paint); border-radius: 3px;
+    transition: background 0.3s;
+  }
+  .step::after {
+    content: ""; position: absolute; left: 1.25rem; top: 2.8rem; bottom: 0.4rem;
+    border-left: 2px dashed var(--line);
+  }
+  .step:last-child::after { display: none; }
+  .step.done::before { content: "✓"; background: var(--go); }
+  .step h3 { margin: 0 0 0.4rem; font-size: 1.3rem; line-height: 1.25; }
+  .step p { margin: 0 0 0.75rem; }
+  .step ul { margin: 0 0 0.75rem; padding-left: 1.2rem; }
+  .step li { margin-bottom: 0.3rem; }
+  .step a { color: var(--focus); font-weight: 700; }
+  .note { color: var(--ink-soft); font-size: 0.97rem; }
+  kbd {
+    font-family: inherit; font-weight: 700; font-size: 0.9em;
+    padding: 0.05rem 0.4rem; border: 2px solid var(--line); border-bottom-width: 3px; border-radius: 4px;
+    background: var(--paper); white-space: nowrap;
+  }
+
+  .check {
+    display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer;
+    font-weight: 700; margin-top: 0.25rem; padding: 0.35rem 0.1rem;
+  }
+  .check input { width: 1.2rem; height: 1.2rem; accent-color: var(--go); cursor: pointer; }
+  .check input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+  /* ---------- console commands ---------- */
+  .console { margin: 0.5rem 0 0.9rem; }
+  .cmd {
+    display: flex; align-items: stretch;
+    background: var(--code-bg); color: var(--code-ink); border-radius: 4px; overflow: hidden;
+    margin-bottom: 0.5rem;
+  }
+  .cmd code {
+    flex: 1; padding: 0.75rem 0.9rem; overflow-x: auto; white-space: pre;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 1rem;
+  }
+  .cmd code::before { content: "] "; opacity: 0.55; }
+  .cmd button {
+    flex: none; border: 0; padding: 0 1rem; cursor: pointer; font: inherit; font-weight: 700; font-size: 0.9rem;
+    background: color-mix(in srgb, var(--code-ink) 12%, transparent); color: var(--code-ink);
+  }
+  .cmd button:hover { background: color-mix(in srgb, var(--code-ink) 22%, transparent); }
+  .cmd button:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+  .cmd.missing code { opacity: 0.6; font-style: italic; }
+
+  /* ---------- troubleshooting ---------- */
+  .trouble { margin-top: 1rem; border-top: 2px solid var(--line); padding-top: 2rem; }
+  .trouble h2 { font-family: "Big Shoulders Stencil Display", "Impact", sans-serif; font-weight: 900; font-size: 2.2rem; color: var(--paint); margin: 0 0 1rem; line-height: 1; }
+  details { background: var(--paper); border: 2px solid var(--line); border-radius: 4px; margin-bottom: 0.6rem; }
+  summary { cursor: pointer; padding: 0.8rem 1rem; font-weight: 700; }
+  summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  details > div { padding: 0 1rem 0.9rem; }
+  details p { margin: 0 0 0.6rem; }
+  details p:last-child { margin-bottom: 0; }
+
+  .foot { margin-top: 2.5rem; color: var(--ink-soft); font-size: 0.95rem; }
+  .reset { background: none; border: 0; padding: 0; font: inherit; color: var(--focus); text-decoration: underline; cursor: pointer; }
+  .reset:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+
+  <header class="hero">
+    <h1>Get to the<br>safe room</h1>
+    <p>How to join our Left 4 Dead 2 server. It takes about 10 minutes the first time, and after that you just connect.</p>
+    <div class="door" id="door" role="status" aria-live="polite">
+      <span class="lamp" aria-hidden="true"></span>
+      <span id="doorText">Door's locked. Work through the steps below.</span>
+      <span class="meter" id="meter">0 of 6</span>
+    </div>
+  </header>
+
+  <section class="details" aria-labelledby="detailsTitle">
+    <h2 id="detailsTitle">What the host sent you</h2>
+    <p>Type these in and the commands below will fill themselves in. Nothing here leaves your browser.</p>
+    <div class="fields">
+      <div>
+        <label for="ip">Server address</label>
+        <input type="text" id="ip" placeholder="100.x.x.x" autocomplete="off" spellcheck="false" inputmode="decimal">
+      </div>
+      <div>
+        <label for="pw">Server password <small>(if there is one)</small></label>
+        <input type="text" id="pw" placeholder="leave blank if none" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+  </section>
+
+  <ol class="steps">
+    <li class="step" data-step="1">
+      <h3>Get Tailscale on your PC</h3>
+      <p>Tailscale is a free app that creates a private link between your PC and the server. The server only accepts players who come in through it.</p>
+      <ul>
+        <li>Download it from <a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a> and install it.</li>
+        <li>Sign in with Google, Microsoft, GitHub, or Apple. The free plan is all you need.</li>
+      </ul>
+      <label class="check"><input type="checkbox"> Tailscale is installed and I'm signed in</label>
+    </li>
+
+    <li class="step" data-step="2">
+      <h3>Accept the invite</h3>
+      <p>Open the invite link the host sent you and click <strong>Accept</strong>. This gives you access to the game server only, nothing else on the host's network.</p>
+      <p class="note">When it works, the server shows up in your Tailscale app's list of machines.</p>
+      <label class="check"><input type="checkbox"> I accepted the invite</label>
+    </li>
+
+    <li class="step" data-step="3">
+      <h3>Get the custom maps</h3>
+      <p>If the host sent you Steam Workshop links, open each one and click <strong>Subscribe</strong>, then start Left 4 Dead 2 once so they download. Everyone needs the same maps as the server, or you'll get kicked when it switches to one.</p>
+      <p class="note">No links from the host? Skip this step.</p>
+      <label class="check"><input type="checkbox"> Maps are subscribed, or there weren't any</label>
+    </li>
+
+    <li class="step" data-step="4">
+      <h3>Turn on the developer console</h3>
+      <p>In Left 4 Dead 2, go to <strong>Options</strong>, then <strong>Keyboard/Mouse</strong>, and set <strong>Allow Developer Console</strong> to <strong>Enabled</strong>. You only do this once.</p>
+      <label class="check"><input type="checkbox"> Developer console is enabled</label>
+    </li>
+
+    <li class="step" data-step="5">
+      <h3>Connect</h3>
+      <p>Make sure Tailscale is switched on. Then, from the game's main menu, press <kbd>~</kbd> (the key under <kbd>Esc</kbd>) to open the console and type these, pressing <kbd>Enter</kbd> after each:</p>
+      <div class="console">
+        <div class="cmd" id="pwRow" hidden>
+          <code id="pwCmd"></code>
+          <button type="button" data-copy="pwCmd">Copy</button>
+        </div>
+        <div class="cmd" id="connectRow">
+          <code id="connectCmd"></code>
+          <button type="button" data-copy="connectCmd">Copy</button>
+        </div>
+      </div>
+      <p class="note" id="connectNote"></p>
+      <label class="check"><input type="checkbox"> I'm in the game</label>
+    </li>
+
+    <li class="step" data-step="6">
+      <h3>Next time</h3>
+      <p>Everything above only happens once. From now on, turn Tailscale on, open the console, and run the connect command again. Pressing <kbd>↑</kbd> in the console brings back commands you've typed before.</p>
+      <label class="check"><input type="checkbox"> Got it</label>
+    </li>
+  </ol>
+
+  <section class="trouble" aria-labelledby="troubleTitle">
+    <h2 id="troubleTitle">Stuck?</h2>
+
+    <details>
+      <summary>"Connection failed" or it just times out</summary>
+      <div>
+        <p>This almost always means Tailscale isn't connected. Open the Tailscale app and check that it's switched on and signed in, and that the server appears in your list of machines. If it doesn't appear, open the invite link again and accept it.</p>
+        <p>Also double-check the address. It should start with <strong>100.</strong> and end with <strong>:27015</strong>.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>Pressing ~ doesn't open the console</summary>
+      <div>
+        <p>Check that <strong>Allow Developer Console</strong> is set to <strong>Enabled</strong> in step 4. On some keyboard layouts the console key is a different key in the same spot, just below <kbd>Esc</kbd> and left of <kbd>1</kbd>.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>"Bad password" or I got kicked right away</summary>
+      <div>
+        <p>Type the password command again exactly as the host sent it, then connect. Passwords are case-sensitive.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>Kicked for a missing map</summary>
+      <div>
+        <p>You're missing a custom map, or have an older version. Ask the host for the Workshop links, subscribe to each one, restart the game so they download, then connect again.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>It lags or rubber-bands</summary>
+      <div>
+        <p>Leave Tailscale connected but close downloads and streams on your network. If it keeps happening, tell the host. Tailscale can show them whether your connection is going direct or through a relay.</p>
+      </div>
+    </details>
+  </section>
+
+  <p class="foot">See you in the safe room. <button type="button" class="reset" id="reset">Clear my checkmarks and details</button></p>
+</main>
+
+<script>
+(function () {
+  var KEY = "l4d2-join-guide-v1";
+  var ipEl = document.getElementById("ip");
+  var pwEl = document.getElementById("pw");
+  var steps = Array.prototype.slice.call(document.querySelectorAll(".step"));
+  var boxes = steps.map(function (s) { return s.querySelector('input[type="checkbox"]'); });
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; }
+  }
+  function save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({
+        ip: ipEl.value, pw: pwEl.value,
+        done: boxes.map(function (b) { return b.checked; })
+      }));
+    } catch (e) { /* storage unavailable; page still works */ }
+  }
+
+  function address() {
+    var v = ipEl.value.trim().replace(/^connect\s+/i, "");
+    if (!v) return "";
+    return /:\d+$/.test(v) ? v : v + ":27015";
+  }
+
+  function render() {
+    var addr = address();
+    var pw = pwEl.value.trim();
+    var connectRow = document.getElementById("connectRow");
+    document.getElementById("connectCmd").textContent = addr ? "connect " + addr : "connect (enter the server address above)";
+    connectRow.classList.toggle("missing", !addr);
+    connectRow.querySelector("button").disabled = !addr;
+
+    var pwRow = document.getElementById("pwRow");
+    pwRow.hidden = !pw;
+    document.getElementById("pwCmd").textContent = "password " + pw;
+
+    document.getElementById("connectNote").textContent = pw
+      ? "Type the password line first, then connect."
+      : "If the host gave you a password, enter it above and a password line will appear here.";
+
+    var count = 0;
+    steps.forEach(function (s, i) {
+      s.classList.toggle("done", boxes[i].checked);
+      if (boxes[i].checked) count++;
+    });
+    var door = document.getElementById("door");
+    var open = count === steps.length;
+    door.classList.toggle("open", open);
+    document.getElementById("meter").textContent = count + " of " + steps.length;
+    document.getElementById("doorText").textContent = open
+      ? "Door's open. You're in."
+      : count === 0 ? "Door's locked. Work through the steps below." : "Keep going.";
+  }
+
+  var saved = load();
+  ipEl.value = saved.ip || "";
+  pwEl.value = saved.pw || "";
+  (saved.done || []).forEach(function (d, i) { if (boxes[i]) boxes[i].checked = !!d; });
+
+  [ipEl, pwEl].forEach(function (el) { el.addEventListener("input", function () { render(); save(); }); });
+  boxes.forEach(function (b) { b.addEventListener("change", function () { render(); save(); }); });
+
+  document.querySelectorAll("button[data-copy]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = document.getElementById(btn.getAttribute("data-copy")).textContent;
+      function done(ok) {
+        btn.textContent = ok ? "Copied" : "Select it";
+        setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      } else {
+        done(false);
+      }
+    });
+  });
+
+  document.getElementById("reset").addEventListener("click", function () {
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    ipEl.value = ""; pwEl.value = "";
+    boxes.forEach(function (b) { b.checked = false; });
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
