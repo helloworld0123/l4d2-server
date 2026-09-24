@@ -26,7 +26,7 @@ The script asks a few questions, then shows a progress bar while it installs. Th
 |---|---|
 | Server name | Anything. It shows in the server browser. |
 | Server password | Recommended. Friends need it to join. Leave blank for none. |
-| RCON password | A random one is filled in. It lets you run admin commands from inside the game. Clear it to turn remote admin off. |
+| RCON password | A random one is filled in. It lets you run admin commands from inside the game, and the optional [Telegram bot](#telegram-bot) needs it. Clear it to turn remote admin off. |
 | Game mode | Co-op, Realism, or Versus. |
 | Starting campaign | Which map the server loads when it starts. |
 | Difficulty | Easy through Expert. |
@@ -60,6 +60,75 @@ Type `l4d2` on its own to open a menu with everything below. You can also run co
 | `l4d2 help` | Lists all commands. |
 
 The server starts automatically when the machine boots and restarts itself if it crashes.
+
+## Telegram bot
+
+An optional bot that controls the server from a Telegram group: check who's
+playing, change maps, install Workshop maps, restart, and run admin commands
+from your phone.
+
+It only makes outgoing connections, so nothing new is exposed to the internet
+and it works fine behind Tailscale or CGNAT.
+
+> **Everyone in the group gets full control of the game server,** including
+> cheats and raw console commands. Use a private group, don't share the invite
+> link, and set "Add members" to admins only.
+
+### Setting it up
+
+Copy the whole project folder to the server (not just the one script), then:
+
+```bash
+sudo bash telegram-bot-setup.sh
+```
+
+It walks you through creating a bot with [@BotFather](https://t.me/BotFather),
+then waits while you add that bot to your group — it detects the group by
+itself, so you don't need to type anything in the chat. It also turns on RCON
+if you left it disabled during the main setup.
+
+If it can't find the group, it offers to let you type the chat id in by hand.
+Group ids are negative, like `-1001234567890`.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `/status` `/players` `/map` | Is it up, who's on, what map |
+| `/maps` `/info` `/share` | Installed maps, how to connect, links for friends |
+| `/logs [n]` | Last lines of the server log |
+| `/start` `/stop` `/restart` | Control the server |
+| `/changemap <map> [default]` | Switch map now, optionally make it the default |
+| `/addmap <link>` `/removemap <id>` `/updatemaps` | Manage Workshop maps |
+| `/update` | Update game files (slow, server goes down) |
+| `/cheats on\|off` `/difficulty <level>` | Live game settings |
+| `/say <text>` `/kick <player>` | Talk to and moderate players |
+| `/rcon <command>` | Run any console command |
+| `/help` | The list above, in chat |
+
+Anything that would disconnect players asks for confirmation first — but only
+when someone is actually playing, so the prompt stays meaningful.
+
+Long jobs like `/addmap` and `/update` run in the background and report
+progress, one at a time.
+
+### Managing the bot
+
+```bash
+systemctl status l4d2-telegram      # is it running
+journalctl -u l4d2-telegram -f      # follow its log
+sudo bash telegram-bot-setup.sh     # change the token or group
+sudo bash telegram-bot-setup.sh --uninstall
+```
+
+### Tests
+
+The bot has a test suite that needs no game server and no dependencies:
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
 
 ## Custom maps
 
@@ -142,6 +211,39 @@ sudo apt-get update
 
 **Players get kicked for a missing map.** They're missing a map or have an older version. Send them the links from `l4d2 share`.
 
+**Setup says it didn't see the bot appear in any chat.** Make sure you added
+the bot to a *group*, rather than only opening a direct chat with it. If the bot
+was already in the group before you ran setup, send `/start@YourBot` in the
+group so there's something for it to notice. A direct chat works too, and setup
+will offer it.
+
+**The Telegram bot doesn't answer.** Check `systemctl status l4d2-telegram`
+and `journalctl -u l4d2-telegram -n 50`. The usual causes are a wrong group id,
+or Telegram having upgraded your group to a supergroup, which changes its id —
+re-run `telegram-bot-setup.sh` to pick the group again.
+
+**The bot answers, but `/players` and `/cheats` don't work.** If it says RCON
+was *rejected*, the password is wrong or unset — re-run `telegram-bot-setup.sh`,
+which offers to enable it, or set `rcon_password` in `server.cfg` yourself and
+restart the server.
+
+If it says *connection refused*, the game server binds RCON to whatever the
+machine's hostname resolves to, which on Ubuntu is usually `127.0.1.1` rather
+than `127.0.0.1`. The bot tries both automatically. To see where it actually
+listens:
+
+```bash
+ss -lnt 'sport = :27015'
+```
+
+Then set `L4D2_RCON_HOST` in `/etc/l4d2-telegram.env` to that address and run
+`sudo systemctl restart l4d2-telegram`. If nothing is listening at all, the
+server is down — check `l4d2 status`.
+
+**"Conflict: terminated by other getUpdates request".** Two copies of the bot are
+running against the same token, or the token has leaked. Stop any manual copy,
+and revoke the token in @BotFather if you didn't start a second one.
+
 ## Security
 
 The script sets things up to be reasonably safe by default:
@@ -155,6 +257,10 @@ To keep it that way:
 - Keep Ubuntu updated with `sudo apt update && sudo apt upgrade`, or turn on automatic security updates.
 - Use a server password, and keep the RCON password private or leave it disabled.
 - Only install maps and plugins from sources you trust.
+- If you use the Telegram bot, keep the group private. Group membership is
+  the only thing standing between someone and full control of the server.
+  If the bot token leaks, open @BotFather, send `/revoke`, and re-run
+  `telegram-bot-setup.sh` with the new token.
 - On a VPS, log in with SSH keys and turn off password login.
 
 ## Where things live
@@ -171,8 +277,21 @@ To keep it that way:
 | `/etc/systemd/system/l4d2.service` | Background service definition |
 | `/usr/local/bin/l4d2` | The `l4d2` management command |
 | `/var/log/l4d2-setup.log` | Setup log |
+| `/opt/l4d2-telegram/` | Telegram bot code |
+| `/etc/l4d2-telegram.env` | Bot token and group id (secret, mode 600) |
+| `/etc/systemd/system/l4d2-telegram.service` | Bot service definition |
+| `/var/lib/l4d2-telegram/` | Bot state |
+| `/var/log/l4d2-telegram-setup.log` | Bot setup log |
 
 ## Uninstalling
+
+If you installed the Telegram bot, remove it first:
+
+```bash
+sudo bash telegram-bot-setup.sh --uninstall
+```
+
+Then the server itself:
 
 ```bash
 sudo systemctl disable --now l4d2
