@@ -108,6 +108,21 @@ GAME_MODE=$(whiptail --title "$TITLE" --menu "Default game mode:" 14 60 3 \
   "realism" "Realism co-op (harder, no outlines)" \
   "versus"  "Versus (4 vs 4)" 3>&1 1>&2 2>&3) || cancelled
 
+SLOTS=4
+if [[ "$GAME_MODE" != "versus" ]]; then
+  SLOTS=$(whiptail --title "$TITLE" --default-item "4" --menu \
+"How many players in co-op?
+
+L4D2 normally allows 4. More than 4 installs SourceMod + MultiSlots
+(free server mods) which add a survivor for each extra player.
+Players don't need to install anything. You can change this later: l4d2 slots" 20 74 5 \
+    "4"  "Normal L4D2 - no mods" \
+    "6"  "6 survivors" \
+    "8"  "8 survivors (most popular)" \
+    "10" "10 survivors" \
+    "12" "12 survivors (chaotic)" 3>&1 1>&2 2>&3) || cancelled
+fi
+
 START_MAP=$(whiptail --title "$TITLE" --menu "Starting campaign:" 22 60 14 \
   "c1m1_hotel"        "Dead Center" \
   "c2m1_highway"      "Dark Carnival" \
@@ -149,12 +164,13 @@ whiptail --title "$TITLE" --yesno \
   Password    : ${SV_PASS:-(none)}
   RCON        : ${RCON_PASS:-(disabled)}
   Mode / map  : $GAME_MODE / $START_MAP
+  Players     : $SLOTS$( ((SLOTS > 4)) && echo " (installs SourceMod + MultiSlots)")
   Difficulty  : $DIFFICULTY
   Network     : $NET_MODE
   Port        : $GAME_PORT/udp
   Workshop    : ${WS_MAPS:-(none)}
 
-Start installing now?" 19 64 || cancelled
+Start installing now?" 21 74 || cancelled
 
 # ---------------------------------------------------------------- install steps
 progress() { printf 'XXX\n%d\n%b\nXXX\n' "$1" "$2"; }
@@ -305,6 +321,13 @@ EOF
     fi
   fi
 
+  if (( SLOTS > 4 )) || [[ -d "$INSTALL_DIR/left4dead2/addons/sourcemod" ]]; then
+    progress 96 "Setting co-op player slots to $SLOTS...\n\n(downloads SourceMod, Metamod, L4DToolZ and MultiSlots if needed)"
+    if ! run /usr/local/bin/l4d2 slots "$SLOTS" --no-restart; then
+      echo "Could not set player slots to $SLOTS - see $LOG. Try later with: l4d2 slots $SLOTS" >>"$LOG.warnings"
+    fi
+  fi
+
   progress 97 "Starting the server..."
   run systemctl enable l4d2
   run systemctl restart l4d2
@@ -355,6 +378,7 @@ L4D2_DIR=$INSTALL_DIR
 L4D2_PORT=$GAME_PORT
 L4D2_MODE=$GAME_MODE
 L4D2_MAP=$START_MAP
+L4D2_SLOTS=4
 L4D2_STEAMCMD=$STEAMCMD
 EOF
   chmod 644 /etc/l4d2.env
@@ -367,6 +391,7 @@ EOF
 #  Run "l4d2" or "l4d2 menu" for the interactive menu, "l4d2 help" for commands.
 #  Settings shared with the systemd service live in /etc/l4d2.env
 # =============================================================================
+import io
 import json
 import os
 import pwd
@@ -375,6 +400,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.parse
@@ -387,6 +413,33 @@ L4D2_APPID = 550
 UA = {"User-Agent": "l4d2-server-helper/1.0"}
 MAPNAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 WT_TITLE = "L4D2 Server"
+
+# ---- player-slot mods (8+ survivors in co-op) ----
+SM_BRANCH = "1.12"   # SourceMod / Metamod:Source stable branch
+SM_BASES = ["https://sm.alliedmods.net/smdrop", "https://www.sourcemod.net/smdrop"]
+MM_BASES = ["https://mms.alliedmods.net/mmsdrop", "https://www.sourcemm.net/mmsdrop"]
+L4DTOOLZ_API = "https://api.github.com/repos/lakwsh/l4dtoolz/releases/latest"
+L4DTOOLZ_FALLBACK = "https://github.com/lakwsh/l4dtoolz/releases/download/2.5.1/l4dtoolz-2.5.1-main.zip"
+L4DHOOKS_ZIP = "https://github.com/SilvDev/Left4DHooks/archive/refs/heads/main.zip"
+HARRY_RAW = "https://raw.githubusercontent.com/fbef0102/L4D1_2-Plugins/master/"
+# repo path -> path under addons/sourcemod/
+HARRY_FILES = [
+    ("l4d_CreateSurvivorBot/plugins/l4d_CreateSurvivorBot.smx", "plugins/l4d_CreateSurvivorBot.smx"),
+    ("l4d_CreateSurvivorBot/gamedata/l4d_CreateSurvivorBot.txt", "gamedata/l4d_CreateSurvivorBot.txt"),
+    ("l4dmultislots/plugins/l4dmultislots.smx", "plugins/l4dmultislots.smx"),
+    ("l4dmultislots/translations/l4dmultislots.phrases.txt", "translations/l4dmultislots.phrases.txt"),
+    ("l4dafkfix_deadbot/plugins/l4dafkfix_deadbot.smx", "plugins/l4dafkfix_deadbot.smx"),
+    ("l4d_both_fixUpgradePack/plugins/l4d_both_fixUpgradePack.smx", "plugins/l4d_both_fixUpgradePack.smx"),
+    ("l4d_both_fixUpgradePack/gamedata/l4d_both_fixUpgradePack.txt", "gamedata/l4d_both_fixUpgradePack.txt"),
+    ("l4d2_rescue_vehicle_multi/plugins/l4d2_rescue_vehicle_multi.smx", "plugins/l4d2_rescue_vehicle_multi.smx"),
+    ("l4d2_rescue_vehicle_multi/gamedata/l4d2_rescue_vehicle_multi.txt", "gamedata/l4d2_rescue_vehicle_multi.txt"),
+    ("l4d_full_slot_bot_replace_fix/plugins/l4d_full_slot_bot_replace_fix.smx", "plugins/l4d_full_slot_bot_replace_fix.smx"),
+    ("l4d_full_slot_bot_replace_fix/gamedata/l4d_full_slot_bot_replace_fix.txt", "gamedata/l4d_full_slot_bot_replace_fix.txt"),
+]
+SLOT_PLUGINS = [os.path.basename(d) for _, d in HARRY_FILES if d.endswith(".smx")]
+CFG_BEGIN = "// >>> player slots - managed by 'l4d2 slots', do not edit by hand"
+CFG_END = "// <<< player slots"
+MIN_SLOTS, MAX_SLOTS = 4, 12
 
 OFFICIAL = [
     ("c1m1_hotel", "Dead Center"), ("c2m1_highway", "Dark Carnival"),
@@ -425,17 +478,19 @@ def set_env(key, value):
 
 
 ENV = {}
-USER = HOME = DIR = ADDONS = CFG = CONLOG = INDEX = INFO = STEAMCMD = ""
+USER = HOME = DIR = GAME = ADDONS = CFG = CONLOG = INDEX = INFO = STEAMCMD = SMDIR = ""
 
 
 def init_paths():
-    global ENV, USER, HOME, DIR, ADDONS, CFG, CONLOG, INDEX, INFO, STEAMCMD
+    global ENV, USER, HOME, DIR, GAME, ADDONS, CFG, CONLOG, INDEX, INFO, STEAMCMD, SMDIR
     ENV = load_env()
     USER = ENV.get("L4D2_USER", "l4d2")
     HOME = ENV.get("L4D2_HOME", f"/home/{USER}")
     DIR = ENV.get("L4D2_DIR", f"{HOME}/l4d2server")
     STEAMCMD = ENV.get("L4D2_STEAMCMD", "/usr/games/steamcmd")
-    ADDONS = os.path.join(DIR, "left4dead2", "addons")
+    GAME = os.path.join(DIR, "left4dead2")
+    ADDONS = os.path.join(GAME, "addons")
+    SMDIR = os.path.join(ADDONS, "sourcemod")
     CFG = os.path.join(DIR, "left4dead2", "cfg", "server.cfg")
     CONLOG = os.path.join(DIR, "left4dead2", "console.log")
     INDEX = os.path.join(HOME, "maps.json")
@@ -1000,6 +1055,11 @@ def cmd_update(_args):
     subprocess.run(as_user([STEAMCMD, "+force_install_dir", DIR, "+login", "anonymous",
                             "+app_update", "222860", "validate", "+quit"]))
     cmd_updatemaps(["--no-restart"])
+    if mods_installed():
+        try:
+            install_mods(update=True)
+        except Exception as e:
+            print(f"Warning: couldn't refresh mods ({e}). The server will still start.")
     subprocess.run(["systemctl", "start", "l4d2"])
     print("Update finished, server started.")
 
@@ -1011,7 +1071,8 @@ def status_text():
     pend = pending_addons()
     lines = [f"Service       : {active}", f"Game process  : {running}",
              f"Default map   : {ENV.get('L4D2_MAP')}  ({ENV.get('L4D2_MODE')})",
-             f"Custom addons : {len(idx)} installed"]
+             f"Custom addons : {len(idx)} installed",
+             f"Co-op slots   : {current_slots()}" + (" (MultiSlots)" if current_slots() > 4 else "")]
     if pend:
         lines.append(f"Pending       : {len(pend)} new addon(s) - restart to load")
     return "\n".join(lines)
@@ -1037,6 +1098,261 @@ def cmd_config(_args):
     subprocess.run([os.environ.get("EDITOR", "nano"), CFG])
     if ask_yes("Restart the server to apply the config?"):
         restart_server()
+
+
+# ----------------------------------------------------------------- player slots (mods)
+def fetch(url, timeout=60):
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def safe_members(t, update):
+    for m in t.getmembers():
+        name = m.name[2:] if m.name.startswith("./") else m.name
+        parts = name.split("/")
+        if name.startswith("/") or ".." in parts or not (m.isfile() or m.isdir()):
+            continue
+        # on updates keep the user's configs (admins, cvars)
+        if update and (name.startswith("cfg/") or name.startswith("addons/sourcemod/configs/")):
+            continue
+        yield m
+
+
+def extract_tar(data, dest, update):
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+        members = list(safe_members(t, update))
+        try:
+            t.extractall(dest, members=members, filter="data")
+        except TypeError:          # Python without extraction filters
+            t.extractall(dest, members=members)
+
+
+def alliedmods_latest(bases, latest_file):
+    last = None
+    for base in bases:
+        try:
+            name = fetch(f"{base}/{SM_BRANCH}/{latest_file}", 30).decode().strip()
+            if name.endswith(".tar.gz") and "/" not in name:
+                return f"{base}/{SM_BRANCH}/{name}"
+        except Exception as e:
+            last = e
+    raise IOError(f"could not find the latest {latest_file} ({last})")
+
+
+def write_file(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def install_metamod(update):
+    url = alliedmods_latest(MM_BASES, "mmsource-latest-linux")
+    print(f"  Metamod:Source   {os.path.basename(url)}")
+    extract_tar(fetch(url), GAME, update)
+    # L4D2 needs this exact loader path; drop the 64-bit loader (L4D2 is a 32-bit server)
+    write_file(os.path.join(ADDONS, "metamod.vdf"),
+               b'"Plugin"\n{\n\t"file"\t"../left4dead2/addons/metamod/bin/server"\n}\n')
+    for extra in ("metamod_x64.vdf",):
+        try:
+            os.remove(os.path.join(ADDONS, extra))
+        except FileNotFoundError:
+            pass
+    if not os.path.exists(os.path.join(ADDONS, "metamod", "bin", "server.so")):
+        print("  ! Warning: addons/metamod/bin/server.so not found - Metamod may not load.")
+
+
+def install_sourcemod(update):
+    url = alliedmods_latest(SM_BASES, "sourcemod-latest-linux")
+    print(f"  SourceMod        {os.path.basename(url)}")
+    extract_tar(fetch(url), GAME, update)
+
+
+def install_l4dtoolz():
+    url = L4DTOOLZ_FALLBACK
+    try:
+        rel = json.loads(fetch(L4DTOOLZ_API, 30))
+        assets = [a["browser_download_url"] for a in rel.get("assets", [])
+                  if a["name"].endswith(".zip") and "2155" not in a["name"]]   # 2155 = special-server build
+        if assets:
+            url = assets[0]
+    except Exception:
+        pass
+    print(f"  L4DToolZ         {url.rsplit('/', 2)[-2]}")
+    with zipfile.ZipFile(io.BytesIO(fetch(url))) as z:
+        for n in ("l4dtoolz.so", "l4dtoolz.vdf"):
+            write_file(os.path.join(ADDONS, n), z.read(n))
+
+
+def install_left4dhooks():
+    print("  Left4DHooks      (latest)")
+    with zipfile.ZipFile(io.BytesIO(fetch(L4DHOOKS_ZIP))) as z:
+        for n in z.namelist():
+            parts = n.split("/")
+            if (len(parts) >= 4 and parts[1] == "sourcemod" and parts[2] in ("gamedata", "data", "plugins")
+                    and not n.endswith("/") and ".." not in parts):
+                write_file(os.path.join(SMDIR, *parts[2:]), z.read(n))
+
+
+def install_harry_plugins():
+    print("  MultiSlots + 5+ survivor fixes")
+    for src, dest in HARRY_FILES:
+        write_file(os.path.join(SMDIR, dest), fetch(HARRY_RAW + src))
+        disabled = os.path.join(SMDIR, "plugins", "disabled", os.path.basename(dest))
+        if dest.endswith(".smx") and os.path.exists(disabled):
+            os.remove(disabled)
+
+
+def chown_tree(path):
+    pw = pwd.getpwnam(USER)
+    for root, dirs, files in os.walk(path):
+        for n in dirs + files:
+            try:
+                os.lchown(os.path.join(root, n), pw.pw_uid, pw.pw_gid)
+            except FileNotFoundError:
+                pass
+    os.lchown(path, pw.pw_uid, pw.pw_gid)
+
+
+def mods_installed():
+    return os.path.isdir(SMDIR) and os.path.isdir(os.path.join(ADDONS, "metamod"))
+
+
+def install_mods(update=False):
+    """Download/refresh everything. update=True keeps existing SourceMod configs."""
+    print("Installing server mods (SourceMod, Metamod, L4DToolZ, MultiSlots)...")
+    sm_present = mods_installed()
+    install_metamod(update or sm_present)
+    install_sourcemod(update or sm_present)
+    install_l4dtoolz()
+    install_left4dhooks()
+    install_harry_plugins()
+    chown_tree(ADDONS)
+    if os.path.isdir(os.path.join(GAME, "cfg")):
+        chown_tree(os.path.join(GAME, "cfg"))
+    print("  Mods installed.")
+
+
+def set_cfg_block(lines_or_none):
+    text = open(CFG).read() if os.path.exists(CFG) else ""
+    text = re.sub(re.escape(CFG_BEGIN) + r".*?" + re.escape(CFG_END) + r"\n?", "", text, flags=re.S)
+    if lines_or_none:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n".join([CFG_BEGIN] + lines_or_none + [CFG_END]) + "\n"
+    with open(CFG, "w") as f:
+        f.write(text)
+    chown_user(CFG)
+
+
+def set_cvars_in_file(path, values):
+    text = open(path).read() if os.path.exists(path) else ""
+    for k, v in values.items():
+        line = f'{k} "{v}"'
+        pat = re.compile(r'^[ \t]*' + re.escape(k) + r'[ \t]+.*$', re.M)
+        text = pat.sub(line, text) if pat.search(text) else (text + ("" if text.endswith("\n") or not text else "\n") + line + "\n")
+    write_file(path, text.encode())
+    chown_user(path)
+
+
+def current_slots():
+    try:
+        return int(ENV.get("L4D2_SLOTS", "4"))
+    except ValueError:
+        return 4
+
+
+def cmd_slots(args):
+    flags = [a for a in args if a.startswith("--")]
+    rest = [a for a in args if not a.startswith("--")]
+    if not rest:
+        n = current_slots()
+        print(f"Co-op player slots: {n}" + ("  (vanilla, no mods)" if n <= 4 else "  (MultiSlots)"))
+        print(f"Change with: l4d2 slots <{MIN_SLOTS}-{MAX_SLOTS}>")
+        return
+    try:
+        n = int(rest[0])
+    except ValueError:
+        die(f"slots must be a number from {MIN_SLOTS} to {MAX_SLOTS}.")
+    if not MIN_SLOTS <= n <= MAX_SLOTS:
+        die(f"slots must be from {MIN_SLOTS} to {MAX_SLOTS} (more than {MAX_SLOTS} gets unstable).")
+
+    plugins = os.path.join(SMDIR, "plugins")
+    if n > 4:
+        try:
+            install_mods(update=mods_installed())
+        except Exception as e:
+            die(f"mod download failed: {e}\nNothing was switched on. Check the server's internet connection and try again.")
+        set_cfg_block([
+            f"sv_maxplayers {n}               // L4DToolZ: max human players",
+            "sv_force_unreserved 1          // L4DToolZ: no lobby reservation (lobbies cap co-op at 4)",
+            "sm_cvar precache_all_survivors 1  // load all survivor models (prevents crashes with 5+)",
+            "sv_consistency 0",
+        ])
+        set_cvars_in_file(os.path.join(GAME, "cfg", "sourcemod", "l4dmultislots.cfg"), {
+            "l4d_multislots_max_survivors": n,
+            "l4d_multislots_min_survivors": 4,     # extra survivors only appear when 5+ people join
+        })
+        set_env("L4D2_SLOTS", str(n))
+        print(f"\nCo-op now allows {n} players. Survivors 5-{n} spawn automatically as people join.")
+        print("Anyone who ends up spectating can type !join in chat.")
+    else:
+        if os.path.isdir(plugins):
+            os.makedirs(os.path.join(plugins, "disabled"), exist_ok=True)
+            for p in SLOT_PLUGINS:
+                src = os.path.join(plugins, p)
+                if os.path.exists(src):
+                    os.replace(src, os.path.join(plugins, "disabled", p))
+            chown_tree(plugins)
+        set_cfg_block(None)
+        set_env("L4D2_SLOTS", "4")
+        print("Back to the normal 4-player co-op (mods stay installed but MultiSlots is switched off).")
+    maybe_restart(flags, "the new player limit")
+
+
+STEAMID_RE = re.compile(r"^(STEAM_[0-5]:[01]:\d{1,10}|\[U:1:\d{1,10}\]|7656119\d{10})$")
+
+
+def cmd_admin(args):
+    if not mods_installed():
+        die("SourceMod isn't installed. Enable it first with: l4d2 slots 8   (or any number above 4)")
+    ini = os.path.join(SMDIR, "configs", "admins_simple.ini")
+    if not args:
+        print("Usage: l4d2 admin <SteamID>     e.g. STEAM_1:0:12345678 or 76561198000000000")
+        print("Find your SteamID at https://steamid.io (paste your Steam profile link).\n")
+        if os.path.exists(ini):
+            ids = [l.split('"')[1] for l in open(ini) if l.strip().startswith('"')]
+            print("Current admins: " + (", ".join(ids) if ids else "(none)"))
+        return
+    sid = args[0].strip()
+    if not STEAMID_RE.match(sid):
+        die("that doesn't look like a SteamID. Use the STEAM_1:... or 7656119... form from steamid.io")
+    text = open(ini).read() if os.path.exists(ini) else ""
+    if f'"{sid}"' in text:
+        print(f"{sid} is already an admin.")
+        return
+    with open(ini, "a") as f:
+        f.write(("" if text.endswith("\n") or not text else "\n") + f'"{sid}" "99:z"\n')
+    chown_user(ini)
+    if server_pid():
+        send_console("sm_reloadadmins")
+    print(f"{sid} is now a full admin. In game, type in chat:")
+    print("   !admin                     open the admin menu")
+    print("   !map from_the_roof_01      change map (works for custom maps too)")
+
+
+def cmd_modcheck(_args):
+    if not server_pid():
+        die("the server isn't running.")
+    start = os.path.getsize(CONLOG) if os.path.exists(CONLOG) else 0
+    for c in ("plugin_print", "meta list", "sm plugins list", "sv_maxplayers"):
+        send_console(c)
+    time.sleep(3)
+    with open(CONLOG, errors="replace") as f:
+        f.seek(start)
+        print(f.read() or "(no output - is the server fully started?)")
 
 
 # ----------------------------------------------------------------- whiptail UI
@@ -1117,6 +1433,8 @@ def cmd_menu(_args=None):
                  ("share", "Map links to send your friends"),
                  ("remove", "Remove a custom map"),
                  ("updatemaps", "Check Workshop maps for updates"),
+                 ("slots", "Co-op player slots (4 to 12)"),
+                 ("admin", "Make someone an in-game admin"),
                  ("restart", "Restart the server"),
                  ("logs", "Show recent server log"),
                  ("console", "Open the live server console"),
@@ -1149,6 +1467,18 @@ def cmd_menu(_args=None):
             key = wt_menu("Remove which addon?", opts)
             if key and wt_yesno(f"Remove {dict(opts)[key]}?"):
                 in_terminal(cmd_removemap, [key])
+        elif choice == "slots":
+            opts = [(str(n), "Normal L4D2, no mods" if n == 4 else ("Recommended" if n == 8 else ""))
+                    for n in range(MIN_SLOTS, MAX_SLOTS + 1)]
+            n = wt_menu(f"How many players in co-op? (now: {current_slots()})\n"
+                        "Above 4 installs SourceMod + MultiSlots automatically.", opts, str(current_slots()))
+            if n:
+                in_terminal(cmd_slots, [n])
+        elif choice == "admin":
+            sid = wt_input("SteamID of the new admin (find it at steamid.io):\n"
+                           "e.g. STEAM_1:0:12345678 or 76561198000000000")
+            if sid:
+                in_terminal(cmd_admin, [sid])
         elif choice == "updatemaps":
             in_terminal(cmd_updatemaps, [])
         elif choice == "restart":
@@ -1184,6 +1514,10 @@ HELP = """Usage: l4d2 <command>
   removemap <id|file|map> Uninstall a custom map
   updatemaps              Re-download Workshop maps that changed
   share                   Map links to send your friends
+
+  slots [4-12]            Co-op player limit (above 4 installs SourceMod + MultiSlots)
+  admin [SteamID]         Make someone an in-game admin (!admin, !map in chat)
+  modcheck                Show which mods/plugins the running server loaded
 """
 
 
@@ -1220,6 +1554,12 @@ def main():
         print(share_text())
     elif cmd == "update":
         cmd_update(rest)
+    elif cmd == "slots":
+        cmd_slots(rest)
+    elif cmd == "admin":
+        cmd_admin(rest)
+    elif cmd == "modcheck":
+        cmd_modcheck(rest)
     elif cmd == "logs":
         cmd_logs(rest)
     elif cmd == "console":
@@ -1295,6 +1635,7 @@ Server name : $SV_NAME
 Password    : ${SV_PASS:-(none)}
 RCON        : ${RCON_PASS:-(disabled)}
 Mode / map  : $GAME_MODE / $START_MAP ($DIFFICULTY)
+Players     : $SLOTS
 Network     : $NET_MODE
 
 In-game console:  ${SV_PASS:+password $SV_PASS
@@ -1313,6 +1654,9 @@ Or directly:
 Files: $INSTALL_DIR
 Setup log: $LOG
 EOF
+if (( SLOTS > 4 )); then
+  printf '\n%s-player co-op is on. Extra survivors spawn as people join; spectators type !join.\nWant in-game admin (!map, !admin)? Run:  l4d2 admin <your SteamID>\n' "$SLOTS" >>"$INFO_FILE"
+fi
 if [[ -n "$WS_MAPS" ]]; then
   printf '\nFriends need the same maps. Links to send them:  l4d2 share\n' >>"$INFO_FILE"
 fi
