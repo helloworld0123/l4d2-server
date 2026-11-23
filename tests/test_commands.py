@@ -192,7 +192,8 @@ class RouterTests(unittest.TestCase):
     def _router(self, ctx=None, bot=None):
         bot = bot or FakeBot()
         ctx = ctx or StubContext(bot)
-        return main_mod.Router(bot, ctx.cfg, ctx, "myl4d2bot", {}), ctx, bot
+        return main_mod.Router(bot, ctx.cfg, ctx, "myl4d2bot", {},
+                               log=lambda *_: None), ctx, bot
 
     def test_strips_the_bot_suffix_groups_add(self):
         router, _, _ = self._router()

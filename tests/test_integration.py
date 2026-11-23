@@ -3,11 +3,13 @@
 Only the Telegram transport and the game server are faked.
 """
 
+import os
 import socketserver
 import struct
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from bot import commands, config as config_mod, context, rcon
 
@@ -84,7 +86,14 @@ class IntegrationTests(unittest.TestCase):
         self.cfg_file.close()
 
         cfg = config_mod.Config("t", -1001, {"L4D2_MAP": "c1m1_hotel"}, host, port)
-        cfg.__class__.cfg_path = property(lambda _self, p=self.cfg_file.name: p)
+        # Patch for this test only: assigning on the class would leak the temp
+        # path into every later test that builds a Config.
+        patcher = mock.patch.object(config_mod.Config, "cfg_path",
+                                    new_callable=mock.PropertyMock,
+                                    return_value=self.cfg_file.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(os.unlink, self.cfg_file.name)
 
         self.bot = RecordingBot()
         self.ctx = context.Context(self.bot, cfg, InlineRunner(), log=lambda *_: None)

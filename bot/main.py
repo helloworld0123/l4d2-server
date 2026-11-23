@@ -36,7 +36,8 @@ def save_state(state):
 
 
 class Router:
-    def __init__(self, bot, cfg, ctx, username, state):
+    def __init__(self, bot, cfg, ctx, username, state, log=None):
+        self.log = log or globals()["log"]
         self.bot = bot
         self.cfg = cfg
         self.ctx = ctx
@@ -82,7 +83,7 @@ class Router:
         if sender.get("is_bot"):
             return
         if chat.get("id") != self.cfg.chat_id:
-            log(f"ignoring message from chat {chat.get('id')}")
+            self.log(f"ignoring message from chat {chat.get('id')}")
             return
         if time.time() - message.get("date", 0) > STALE_AFTER:
             return
@@ -96,11 +97,11 @@ class Router:
         if not self.allowed(sender.get("id")):
             return  # silently drop; replying would amplify the flood
 
-        log(f"{sender.get('username') or sender.get('id')}: /{name} {' '.join(args)}")
+        self.log(f"{sender.get('username') or sender.get('id')}: /{name} {' '.join(args)}")
         try:
             handler(self.ctx, args, message)
         except Exception as e:
-            log(f"/{name} failed: {e!r}")
+            self.log(f"/{name} failed: {e!r}")
             self.ctx.send(f"/{name} failed: {e}")
 
     def on_callback(self, callback):
@@ -109,7 +110,7 @@ class Router:
         try:
             note = self.ctx.resolve(callback.get("data", ""), sender.get("id"))
         except Exception as e:
-            log(f"callback failed: {e!r}")
+            self.log(f"callback failed: {e!r}")
             note = "Something went wrong."
         self.bot.answer_callback(callback["id"], note)
         message = callback.get("message") or {}
