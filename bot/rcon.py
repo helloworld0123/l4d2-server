@@ -181,7 +181,7 @@ def execute(cmd, password, host="127.0.0.1", port=27015, timeout=8.0):
     if _preferred_host in order:
         order = [_preferred_host] + [h for h in order if h != _preferred_host]
 
-    last_error = None
+    last_error, refused = None, 0
     for candidate in order:
         try:
             with RconClient(password, candidate, port, timeout) as client:
@@ -196,10 +196,18 @@ def execute(cmd, password, host="127.0.0.1", port=27015, timeout=8.0):
             # OSError covers TimeoutError: a port that accepts the connection
             # but never answers must fall through to the next candidate.
             last_error = e
+            refused += isinstance(e.__cause__ or e, ConnectionRefusedError)
 
+    if refused == len(order):
+        # Every address answered "nobody home": no game is listening at all.
+        raise RconError(
+            f"The game server isn't listening for RCON on port {port} (tried {', '.join(order)}). "
+            "It is stopped, still starting up, or restarting after a crash. "
+            "In a shell on the server, run: l4d2 status"
+        )
     raise RconError(
-        f"Can't reach RCON on port {port}. Tried {', '.join(order)}. "
-        f"Last error: {last_error}. Is the server running? Check: l4d2 status"
+        f"Can't reach RCON on port {port} (tried {', '.join(order)}): "
+        f"{str(last_error).rstrip('.')}. In a shell on the server, run: l4d2 status"
     )
 
 

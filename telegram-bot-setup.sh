@@ -85,6 +85,13 @@ command -v python3 >/dev/null 2>&1 || die_box "python3 is missing. Install it wi
 . "$SERVER_ENV"
 CFG_FILE="${L4D2_DIR:-/home/l4d2/l4d2server}/left4dead2/cfg/server.cfg"
 
+# server.cfg sits in a directory the unprivileged game user can write to. If it
+# has been swapped for a link, editing it as root would edit the link's target.
+[[ -L "$CFG_FILE" || ! -f "$CFG_FILE" ]] \
+  && die_box "$CFG_FILE is missing or is not a regular file.
+
+Refusing to touch it. Check that file, then run this again."
+
 # Pre-fill from an existing install so re-runs are quick.
 OLD_TOKEN=""; OLD_CHAT=""
 if [[ -f "$CONF" ]]; then
@@ -313,7 +320,8 @@ Turn it on now with a randomly generated password?
     else
       printf '\nrcon_password "%s"\n' "$NEW_RCON" >>"$CFG_FILE"
     fi
-    chown "${L4D2_USER:-l4d2}:${L4D2_USER:-l4d2}" "$CFG_FILE"; chmod 640 "$CFG_FILE"
+    chown -h "${L4D2_USER:-l4d2}:${L4D2_USER:-l4d2}" "$CFG_FILE"
+    [[ -L "$CFG_FILE" ]] || chmod 640 "$CFG_FILE"
     # Apply to the running server without disconnecting anyone.
     sudo -u "${L4D2_USER:-l4d2}" tmux send-keys -t l4d2 "rcon_password $NEW_RCON" Enter 2>/dev/null
     RCON_NOTE="RCON was enabled and applied to the running server."

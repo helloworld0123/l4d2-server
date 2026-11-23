@@ -7,6 +7,7 @@ three exec into tail/tmux/$EDITOR and would never return.
 """
 
 import os
+import stat
 
 from . import jobs, players, rcon, sanitize
 
@@ -115,10 +116,16 @@ def cmd_logs(ctx, args, msg):
         count = 25
     path = os.path.join(ctx.cfg.server_dir, "left4dead2", "console.log")
     try:
-        with open(path, "r", errors="replace") as fh:
+        # The game user owns this folder and the bot runs as root: refuse links
+        # and anything that isn't a plain file, so a planted link can't make
+        # the bot post some other file into the chat.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r", errors="replace") as fh:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("not a regular file")
             fh.seek(0, os.SEEK_END)
             fh.seek(max(0, fh.tell() - 64 * 1024))
-            tail = fh.read().splitlines()[-count:]
+            tail = fh.read(64 * 1024).splitlines()[-count:]
     except OSError as e:
         ctx.send(f"Can't read the log: {e}")
         return
@@ -255,7 +262,7 @@ def cmd_rcon(ctx, args, msg):
     if not raw:
         ctx.send("Usage: /rcon <console command>")
         return
-    if sanitize.RCON_REFUSED.match(raw):
+    if sanitize.rcon_refused(raw):
         ctx.send("Refused: that would change the RCON settings the bot depends on. "
                  "Edit server.cfg on the server instead.")
         return
@@ -264,7 +271,7 @@ def cmd_rcon(ctx, args, msg):
         ok, out = ctx.try_rcon(raw)
         ctx.send(out if ok and out else ("(no output)" if ok else out), preformatted=True)
 
-    if sanitize.RCON_CONFIRM.match(raw):
+    if sanitize.rcon_needs_confirm(raw):
         _disruptive(ctx, msg["from"]["id"], f"Run: {sanitize.display(raw, 80)}", go)
     else:
         go()

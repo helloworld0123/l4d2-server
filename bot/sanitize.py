@@ -10,7 +10,7 @@ Two distinct threats:
 
 import re
 
-MAPNAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+MAPNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-]{0,63}$")
 DIFFICULTIES = ("easy", "normal", "hard", "impossible")
 
 # Zero-width and bidirectional-override characters: a standard trick for
@@ -21,6 +21,20 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 # Commands that would break the bot's own access or the server's config.
 RCON_REFUSED = re.compile(r"^\s*(rcon_password|sv_rcon\w*)\b", re.IGNORECASE)
 RCON_CONFIRM = re.compile(r"^\s*(quit|exit|_restart|sv_password)\b", re.IGNORECASE)
+
+
+def rcon_refused(command):
+    """True when any part of a console line touches the RCON settings.
+
+    The console splits on ';', so checking only the start of the line would
+    let `echo hi; rcon_password x` through.
+    """
+    return any(RCON_REFUSED.match(part) for part in (command or "").split(";"))
+
+
+def rcon_needs_confirm(command):
+    """Same split, for commands that disconnect players or lock them out."""
+    return any(RCON_CONFIRM.match(part) for part in (command or "").split(";"))
 
 
 def console_arg(text, limit=200):
