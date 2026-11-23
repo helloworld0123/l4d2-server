@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>L4D2 Server Panel</title>
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<main id="login" class="login" hidden>
+  <form id="login-form" class="card login-card">
+    <h1>L4D2 Server Panel</h1>
+    <p class="muted">Sign in with the panel password you chose during setup.</p>
+    <label for="login-password">Password</label>
+    <input id="login-password" type="password" autocomplete="current-password" required>
+    <p id="login-error" class="error" role="alert"></p>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+</main>
+
+<div id="app" hidden>
+  <header class="top">
+    <div class="brand">
+      <span class="dot" id="status-dot"></span>
+      <div>
+        <h1 id="hostname">L4D2 Server</h1>
+        <p class="muted" id="status-line">Loading…</p>
+      </div>
+    </div>
+    <div class="power">
+      <button class="btn" id="btn-start" data-control="start">Start</button>
+      <button class="btn" id="btn-restart" data-control="restart">Restart</button>
+      <button class="btn danger" id="btn-stop" data-control="stop">Stop</button>
+      <button class="btn ghost" id="btn-logout">Sign out</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-tab="maps" aria-selected="false">Maps</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+    <button role="tab" data-tab="console" aria-selected="false">Console</button>
+  </nav>
+
+  <div id="banners"></div>
+
+  <main class="content">
+    <!-- ------------------------------------------------------ overview -->
+    <section id="tab-overview" class="tab">
+      <div class="tiles">
+        <div class="tile"><span class="label">Players</span><strong id="t-players">–</strong><span class="sub" id="t-bots"></span></div>
+        <div class="tile"><span class="label">Map</span><strong id="t-map">–</strong><span class="sub" id="t-campaign"></span></div>
+        <div class="tile"><span class="label">Mode</span><strong id="t-mode">–</strong><span class="sub" id="t-difficulty"></span></div>
+        <div class="tile"><span class="label">Uptime</span><strong id="t-uptime">–</strong><span class="sub" id="t-service"></span></div>
+      </div>
+
+      <div class="grid">
+        <div class="card span2">
+          <div class="card-head">
+            <h2>Players online</h2>
+            <span class="muted" id="players-updated"></span>
+          </div>
+          <div id="players"></div>
+          <form id="say-form" class="row">
+            <input id="say-text" maxlength="200" placeholder="Message to everyone in the game…" aria-label="Message to players">
+            <button class="btn" type="submit">Send</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>How friends join</h2>
+          <p class="muted">Type these in the game console (~).</p>
+          <pre id="join" class="code"></pre>
+          <button class="btn small" id="btn-copy-join">Copy</button>
+        </div>
+
+        <div class="card">
+          <h2>Machine</h2>
+          <div class="meter"><div class="meter-head"><span>CPU load</span><span id="m-load-text"></span></div><div class="bar"><i id="m-load"></i></div></div>
+          <div class="meter"><div class="meter-head"><span>Memory</span><span id="m-mem-text"></span></div><div class="bar"><i id="m-mem"></i></div></div>
+          <div class="meter"><div class="meter-head"><span>Disk</span><span id="m-disk-text"></span></div><div class="bar"><i id="m-disk"></i></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- maps -->
+    <section id="tab-maps" class="tab" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Campaigns</h2>
+          <span class="muted">Now playing: <b id="maps-current">–</b> · Starts on: <b id="maps-default">–</b></span>
+        </div>
+        <div id="campaigns" class="campaigns"></div>
+      </div>
+
+      <div class="grid">
+        <div class="card span2">
+          <div class="card-head">
+            <h2>Custom maps</h2>
+            <button class="btn small" id="btn-update-maps">Check for updates</button>
+          </div>
+          <div id="custom-maps"></div>
+          <form id="addmap-form" class="row">
+            <input id="addmap-links" placeholder="Steam Workshop link or id (collections work too)" aria-label="Workshop links">
+            <button class="btn primary" type="submit">Install</button>
+          </form>
+          <p class="muted small">Installed maps load after a restart. Everyone who joins needs the same maps.</p>
+        </div>
+        <div class="card">
+          <h2>Links for friends</h2>
+          <p class="muted">Friends must subscribe to each map before joining.</p>
+          <pre id="share" class="code"></pre>
+          <button class="btn small" id="btn-copy-share">Copy</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------ settings -->
+    <section id="tab-settings" class="tab" hidden>
+      <div class="grid">
+        <form id="settings-form" class="card span2">
+          <h2>Server settings</h2>
+          <div class="fields">
+            <label>Server name
+              <input name="hostname" maxlength="64" required>
+            </label>
+            <label>Join password
+              <span class="row tight">
+                <input name="password" type="password" maxlength="32" autocomplete="off" placeholder="(none)">
+                <button class="btn small" type="button" id="btn-show-password">Show</button>
+              </span>
+            </label>
+            <label>Difficulty
+              <select name="difficulty"></select>
+            </label>
+            <label><span>Game mode <span class="hint">needs a restart</span></span>
+              <select name="mode"></select>
+            </label>
+            <div>
+              <label>Map the server starts on
+                <select name="default_map" aria-describedby="default-map-note"></select>
+              </label>
+              <span class="muted small" id="default-map-note"></span>
+            </div>
+          </div>
+          <div class="row end">
+            <span class="muted" id="settings-note"></span>
+            <button class="btn primary" type="submit">Save settings</button>
+          </div>
+        </form>
+
+        <div class="card">
+          <h2>Live toggles</h2>
+          <label class="switch">
+            <input type="checkbox" id="cheats">
+            <span>Cheats (sv_cheats)</span>
+          </label>
+          <p class="muted small">Applies immediately and lasts until the server restarts.</p>
+
+          <h2 class="gap">Co-op player slots</h2>
+          <div class="row">
+            <select id="slots" aria-label="Player slots"></select>
+            <button class="btn" id="btn-slots">Apply</button>
+          </div>
+          <p class="muted small">More than 4 installs SourceMod and MultiSlots on the server. Players install nothing. Needs a restart.</p>
+
+          <h2 class="gap">Maintenance</h2>
+          <button class="btn" id="btn-update-game">Update game files</button>
+          <p class="muted small">Stops the server, updates through Steam, starts it again. Can take a while.</p>
+        </div>
+      </div>
+
+      <details class="card" id="raw-config">
+        <summary><h2>Advanced: edit server.cfg</h2></summary>
+        <p class="muted" id="raw-path"></p>
+        <textarea id="raw-text" spellcheck="false" rows="18" aria-label="server.cfg"></textarea>
+        <div class="row end">
+          <label class="switch"><input type="checkbox" id="raw-apply" checked><span>Apply to the running server now</span></label>
+          <button class="btn" id="btn-raw-reload" type="button">Reload</button>
+          <button class="btn primary" id="btn-raw-save" type="button">Save server.cfg</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- ------------------------------------------------------- console -->
+    <section id="tab-console" class="tab" hidden>
+      <div class="card">
+        <h2>Console</h2>
+        <pre id="rcon-out" class="code tall" aria-live="polite"></pre>
+        <form id="rcon-form" class="row">
+          <input id="rcon-cmd" maxlength="500" placeholder="Console command, e.g. status" autocomplete="off" spellcheck="false" aria-label="Console command">
+          <button class="btn primary" type="submit">Run</button>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Server log</h2>
+          <span class="row tight">
+            <label class="switch"><input type="checkbox" id="log-follow" checked><span>Follow</span></label>
+            <button class="btn small" id="btn-log-refresh">Refresh</button>
+          </span>
+        </div>
+        <pre id="log-out" class="code tall"></pre>
+      </div>
+    </section>
+  </main>
+
+  <aside id="job" class="job" hidden>
+    <div class="card-head">
+      <h2 id="job-title"></h2>
+      <button class="btn small ghost" id="btn-job-close">Hide</button>
+    </div>
+    <pre id="job-out" class="code"></pre>
+  </aside>
+</div>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text" class="muted"></p>
+    <label id="confirm-extra" class="switch" hidden><input type="checkbox" id="confirm-check"><span id="confirm-check-label"></span></label>
+    <div class="row end">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" id="confirm-ok" value="ok">Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

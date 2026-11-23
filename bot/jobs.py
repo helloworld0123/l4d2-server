@@ -114,6 +114,7 @@ def run(argv, timeout=120, on_output=None):
         pump.join(5)
 
     process.wait()
+    process.stdout.close()
     text = "".join(lines).strip()
     if timed_out:
         text += f"\n\n[timed out after {timeout}s and was killed]"

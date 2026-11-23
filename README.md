@@ -12,7 +12,8 @@ This works on a spare PC at home or on a cloud server (VPS). For players in the 
 
 ## Quick start
 
-Copy `l4d2-setup.sh` to the machine and run:
+Copy the whole project folder to the machine (the script needs the `cli` folder
+next to it), then run:
 
 ```bash
 sudo bash l4d2-setup.sh
@@ -26,7 +27,7 @@ The script asks a few questions, then shows a progress bar while it installs. Th
 |---|---|
 | Server name | Anything. It shows in the server browser. |
 | Server password | Recommended. Friends need it to join. Leave blank for none. |
-| RCON password | A random one is filled in. It lets you run admin commands from inside the game, and the optional [Telegram bot](#telegram-bot) needs it. Clear it to turn remote admin off. |
+| RCON password | A random one is filled in. The optional [Telegram bot](#telegram-bot) and [web panel](#web-panel) use it to talk to the game. It only works from the server machine itself, not from your own game's console (see [In-game admins](#in-game-admins) for that). Clear it to turn remote admin off. Afterwards it lives in `server.cfg` only. |
 | Game mode | Co-op, Realism, or Versus. |
 | Starting campaign | Which map the server loads when it starts. |
 | Difficulty | Easy through Expert. |
@@ -43,6 +44,29 @@ The script asks a few questions, then shows a progress bar while it installs. Th
 
 You can switch modes later by running the setup script again.
 
+### Running setup again
+
+Re-running `l4d2-setup.sh` is safe. The questions start from your current
+server name and passwords, and your `server.cfg` is kept: only the name,
+passwords and difficulty you answer are changed, after a backup is saved next to
+it (the ten newest backups are kept).
+
+### Upgrading
+
+After pulling a newer copy of this project, refresh the installed `l4d2` command
+without answering any questions or touching the running game:
+
+```bash
+sudo bash l4d2-setup.sh --upgrade
+```
+
+It also rewrites the `l4d2` systemd service, so a change to how the game is
+launched reaches you too. The running game is left alone; run `l4d2 restart`
+when it suits you to pick up the new launch settings.
+
+If you use the Telegram bot or the web panel, re-run their setup scripts too so
+they pick up the new code. Both remember your previous answers.
+
 ## Managing the server
 
 Type `l4d2` on its own to open a menu with everything below. You can also run commands directly:
@@ -55,11 +79,76 @@ Type `l4d2` on its own to open a menu with everything below. You can also run co
 | `l4d2 console` | Opens the live server console. Detach with **Ctrl+B** then **D**. Don't type `quit`, since that stops the server. |
 | `l4d2 logs` | Follows the server log. Press **Ctrl+C** to exit. |
 | `l4d2 config` | Edits `server.cfg`, then offers to restart. |
-| `l4d2 update` | Updates the game files and any Workshop maps. |
+| `l4d2 update` | Updates the game files and any Workshop maps. Says so, and exits with an error, if Steam didn't finish. |
+| `l4d2 slots [4-12]` | Shows or sets how many players co-op allows. See below. |
+| `l4d2 admin [SteamID]` | Lists in-game admins, or makes someone one. |
+| `l4d2 modcheck` | Shows which mods and plugins the running server loaded. |
 | `l4d2 info` | Shows connection details for friends. |
 | `l4d2 help` | Lists all commands. |
 
 The server starts automatically when the machine boots and restarts itself if it crashes.
+
+Only one command that changes the server runs at a time, whether it comes from
+the shell, the Telegram bot or the web panel. A second one answers
+`Busy: 'update' is still running` instead of fighting the first.
+
+### More than four players
+
+```bash
+l4d2 slots 8
+```
+
+Co-op normally allows four players. Any number above four (up to twelve)
+installs SourceMod, Metamod, L4DToolZ, Left4DHooks and MultiSlots on the server,
+which add a survivor for each extra player. Players install nothing. Anyone
+left spectating types `!join` in chat. `l4d2 slots 4` switches it back off.
+
+The install also builds this project's own plugins on the server (sources in
+`cli/plugins/`). One is `l4d2_precache_survivors`, which loads all eight
+survivor models on every map.
+Without it the server can crash right after a start, the first time a bot is
+given Bill, Zoey, Francis or Louis.
+
+With more than four players the server is also started with room for 31
+clients (`+sv_setmax 31`) instead of the engine's usual 18. Bots and special
+infected count as clients, and the survivor plugins warn in the log
+("Your maxplayers is not 31") without it.
+
+Each of those downloads is pinned to one exact version and checked against a
+checksum stored in the `l4d2` command, so the server only ever installs the
+files this project was tested with. Moving to newer versions means updating the
+pins at the top of `cli/l4d2.py` and running `sudo bash l4d2-setup.sh --upgrade`.
+
+### In-game admins
+
+Once the mods are installed, make yourself an admin with your SteamID (find it
+at [steamid.io](https://steamid.io)):
+
+```bash
+l4d2 admin STEAM_1:0:12345678
+```
+
+In game, type `!admin` in chat for the admin menu, or `!map <name>` to change
+map. `l4d2 admin` on its own lists the current admins.
+
+Admins also get these chat commands (each works in the game console too, as
+`sm_tank` and so on):
+
+| In chat | What it does |
+|---|---|
+| `!extras` | A menu with everything below. |
+| `!difficulty [easy\|normal\|advanced\|expert]` | Changes difficulty. No level: a menu. Sticks across map changes until the server restarts, which returns to the Settings value. |
+| `!mode [coop\|realism\|mutation4\|...]` | Changes game mode, then reloads the map. No name: a menu of modes; other mutations work by number (`!mode mutation12`). Lasts until the server restarts. |
+| `!restartmap` | Restarts the current chapter. |
+| `!tank`, `!witch`, `!horde` | Spawns one now. |
+| `!tankrun [on\|off]` | Tank run: tanks keep coming until the map ends. `l4d2_extras_tankrun_interval` (25 s) and `l4d2_extras_tankrun_max` (2 at once) tune it. |
+
+They come from a small plugin of this project, `l4d2_admin_extras`. To get it
+on a server that already has the mods, run `sudo bash l4d2-setup.sh --upgrade`
+and then `l4d2 slots <your number>` again.
+
+If something about the mods looks off, `l4d2 modcheck` asks the running server
+which plugins it actually loaded.
 
 ## Telegram bot
 
@@ -123,12 +212,70 @@ sudo bash telegram-bot-setup.sh --uninstall
 
 ### Tests
 
-The bot has a test suite that needs no game server and no dependencies:
+The `l4d2` command, the bot and the web panel have a test suite that needs no game server and no dependencies:
 
 ```bash
 python3 -m unittest discover -s tests -t .
 ```
 
+
+## Web panel
+
+An optional web page for running the server from a browser, phone included.
+
+- **Overview.** Whether the server is up, the current map, who's playing (with
+  ping and time connected), a Kick button per player, a box to message everyone
+  in the game, the connect details to send friends, and CPU, memory and disk.
+- **Maps.** Switch campaign with one click, install Workshop maps by link,
+  remove them, check for updates, copy the links friends need.
+- **Settings.** Server name, join password, difficulty, game mode, starting map,
+  co-op player slots, cheats, plus an editor for `server.cfg` itself.
+- **Console.** Run console commands and follow the server log.
+
+Name, password and difficulty are saved to `server.cfg` and applied to the
+running game straight away. Game mode and player slots take effect on the next
+restart; the panel shows a "Restart to apply" bar until then.
+
+### Setting it up
+
+Copy the whole project folder to the server (not just the one script), then:
+
+```bash
+sudo bash web-panel-setup.sh
+```
+
+It asks who may open the panel, which port to use, and for a panel password.
+
+| Access | What it means |
+|---|---|
+| Tailscale (recommended) | Only devices on your Tailscale network. Open `http://<tailscale-ip>:8080`. |
+| Home network | Devices on the same router. |
+| This machine only | Nothing is opened. Reach it with `ssh -L 8080:localhost:8080 user@server`, then open `http://localhost:8080`. Use this on a public VPS without Tailscale. |
+
+> **Whoever has the panel password has full control of the game server,**
+> including raw console commands. The panel uses plain http, which is why it is
+> only offered on private networks. Don't port-forward it or put it on a public
+> address.
+
+Friends you share the server with through Tailscale can reach the panel's login
+page too. They still need the password, and five wrong guesses lock an address
+out for five minutes, but pick a password you don't use anywhere else.
+
+Open the panel by the address setup prints. If you'd rather use a name
+(for example a custom DNS entry), add it to `L4D2_WEB_HOSTNAMES` in
+`/etc/l4d2-web.env` and restart the panel; names it doesn't know are refused.
+
+### Managing the panel
+
+```bash
+systemctl status l4d2-web        # is it running
+journalctl -u l4d2-web -f        # sign-ins and every action taken
+sudo bash web-panel-setup.sh     # change the password, port or access
+sudo bash web-panel-setup.sh --uninstall
+```
+
+The panel and the Telegram bot can run side by side. If one of them is in the
+middle of a map install or an update, the other is told the server is busy.
 
 ## Custom maps
 
@@ -194,6 +341,24 @@ sudo ufw allow from 192.168.0.0/16 to any port 27015 proto udp
 
 ## Troubleshooting
 
+**`rcon_password` in my game's console doesn't work.** That's expected. The
+game server only accepts RCON connections from the machine it runs on, and the
+firewall only opens the game's UDP port, so RCON is never reachable over the
+network. Use the web panel's console, or make yourself an in-game admin
+(`l4d2 admin <SteamID>`) and type `sm_rcon <command>` in your game console.
+
+**"Busy: ... is still running."** Another `l4d2` command, the Telegram bot or
+the web panel is changing the server right now. Wait for it to finish.
+
+**"Permission denied" from an `l4d2` command.** The command works on the game
+folder as the game user. A file that an older version left owned by root gets
+in the way; the message shows the `chown` command that fixes it.
+
+**A mod "does not match its pinned checksum".** The file that was downloaded is
+not the one this project was tested with, so nothing was installed. Try again
+later; if it keeps happening, the upstream file has changed and the pins in
+`cli/l4d2.py` need updating.
+
 **Setup failed.** The error screen shows the last lines of the log. The full log is at `/var/log/l4d2-setup.log`. It's safe to fix the problem and run the script again.
 
 **"The repository ... does not have a Release file."** This means an unrelated software source on your system is broken. The script continues past this, but it's worth cleaning up. For example, to remove the old Ookla Speedtest source:
@@ -257,10 +422,17 @@ To keep it that way:
 - Keep Ubuntu updated with `sudo apt update && sudo apt upgrade`, or turn on automatic security updates.
 - Use a server password, and keep the RCON password private or leave it disabled.
 - Only install maps and plugins from sources you trust.
+- The `l4d2` command works on the game folder with the game user's rights and
+  only becomes root for systemd and `/etc/l4d2.env`, so nothing left in that
+  folder can redirect it at the rest of the system.
+- The RCON password is kept only in `server.cfg`. Setup no longer shows it on
+  screen or copies it into `SERVER-INFO.txt`.
 - If you use the Telegram bot, keep the group private. Group membership is
   the only thing standing between someone and full control of the server.
   If the bot token leaks, open @BotFather, send `/revoke`, and re-run
   `telegram-bot-setup.sh` with the new token.
+- If you use the web panel, keep it on Tailscale, your home network or an SSH
+  tunnel, and give it a password you use nowhere else.
 - On a VPS, log in with SSH keys and turn off password login.
 
 ## Where things live
@@ -275,27 +447,35 @@ To keep it that way:
 | `/home/l4d2/SERVER-INFO.txt` | Connection details, shown by `l4d2 info` |
 | `/etc/l4d2.env` | Default map, game mode, and paths |
 | `/etc/systemd/system/l4d2.service` | Background service definition |
-| `/usr/local/bin/l4d2` | The `l4d2` management command |
+| `/usr/local/bin/l4d2` | The `l4d2` management command (source: `cli/l4d2.py`) |
+| `/usr/local/share/l4d2/plugins/` | Sources of this project's SourceMod plugins |
+| `/etc/logrotate.d/l4d2` | Weekly rotation of the server log, four old copies kept |
 | `/var/log/l4d2-setup.log` | Setup log |
 | `/opt/l4d2-telegram/` | Telegram bot code |
 | `/etc/l4d2-telegram.env` | Bot token and group id (secret, mode 600) |
 | `/etc/systemd/system/l4d2-telegram.service` | Bot service definition |
 | `/var/lib/l4d2-telegram/` | Bot state |
 | `/var/log/l4d2-telegram-setup.log` | Bot setup log |
+| `/opt/l4d2-web/` | Web panel code |
+| `/etc/l4d2-web.env` | Panel address, port and password hash (mode 600) |
+| `/etc/systemd/system/l4d2-web.service` | Panel service definition |
+| `/var/log/l4d2-web-setup.log` | Panel setup log |
 
 ## Uninstalling
 
-If you installed the Telegram bot, remove it first:
+If you installed the Telegram bot or the web panel, remove them first:
 
 ```bash
 sudo bash telegram-bot-setup.sh --uninstall
+sudo bash web-panel-setup.sh --uninstall
 ```
 
 Then the server itself:
 
 ```bash
 sudo systemctl disable --now l4d2
-sudo rm /etc/systemd/system/l4d2.service /etc/l4d2.env /usr/local/bin/l4d2
+sudo rm /etc/systemd/system/l4d2.service /etc/l4d2.env /usr/local/bin/l4d2 /etc/logrotate.d/l4d2
+sudo rm -r /usr/local/share/l4d2
 sudo systemctl daemon-reload
 sudo userdel -r l4d2
 sudo ufw delete allow in on tailscale0 to any port 27015 proto udp
