@@ -4,20 +4,25 @@ Only the game server (a fake RCON listener) and the `l4d2` CLI (a stub script)
 are faked; auth, routing, config rewriting and the RCON client are the real ones.
 """
 
+import errno
 import http.client
 import socket
 import json
 import os
+import pwd
+import re
 import socketserver
 import stat
 import struct
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from bot import rcon, sanitize
-from web import auth, config as config_mod, panel as panel_mod, server, serverconf
+from web import auth, config as config_mod, gameio, panel as panel_mod, server, serverconf
 
 PASSWORD = "correct horse battery"
 # Hashing at full strength would add seconds to every test class.
@@ -31,8 +36,19 @@ players : 1 humans, 1 bots (8 max) (not hibernating) (unreserved)
 #  3 2 "Rochelle" BOT active
 '''
 CVAR_REPLY = '"z_difficulty" = "Hard"\n"sv_cheats" = "0"\n"mp_gamemode" = "coop"\n'
+# What the fake game answers for its live settings; tests swap parts of it.
+GAME = {"cvars": CVAR_REPLY, "tank_run": None}   # tank_run None: no admin extras plugin
 
 SENT = []
+
+
+def cvar_reply(text):
+    """The console's answer to one or more cvar names, like srcds gives it."""
+    state = GAME["tank_run"]
+    tank = ('Unknown command "l4d2_extras_tankrun"\n' if state is None else
+            f'"l4d2_extras_tankrun" = "{int(state)}" ( def. "0" ) min. 0.000000 max. 1.000000\n'
+            " - Tank run on this map: 1 = on, 0 = off.\n")
+    return (GAME["cvars"] if text.startswith("z_difficulty;") else "") + tank
 
 
 def read(path):
@@ -55,7 +71,11 @@ class GameServer(socketserver.BaseRequestHandler):
                 self.request.sendall(rcon.encode_packet(pid, rcon.SERVERDATA_AUTH_RESPONSE, ""))
                 continue
             SENT.append(text)
-            reply = STATUS_REPLY if text == "status" else CVAR_REPLY if text.startswith("z_difficulty;") else f"ack: {text}"
+            if text.startswith("sm_tankrun ") and GAME["tank_run"] is not None:
+                GAME["tank_run"] = text.endswith(" on")
+            reply = (STATUS_REPLY if text == "status"
+                     else cvar_reply(text) if text.startswith("z_difficulty;") or text == "l4d2_extras_tankrun"
+                     else f"ack: {text}")
             self.request.sendall(rcon.encode_packet(pid, 0, reply))
 
     def _read(self, n):
@@ -203,12 +223,41 @@ class ServerConfTests(unittest.TestCase):
             link, fifo = os.path.join(tmp, "server.cfg"), os.path.join(tmp, "console.log")
             os.symlink(secret, link)
             os.mkfifo(fifo)
-            self.assertEqual(serverconf.read_text(link), "")
-            self.assertEqual(serverconf.read_text(fifo), "")  # and does not hang
+            # Only a missing file reads as empty; anything else is an error, so
+            # a save can never mistake "couldn't read it" for "it was empty".
+            self.assertEqual(serverconf.read_text(os.path.join(tmp, "missing.cfg")), "")
+            with self.assertRaises(OSError):
+                serverconf.read_text(link)
+            with self.assertRaises(OSError):
+                serverconf.read_text(fifo)  # and does not hang
             with self.assertRaises(OSError):
                 serverconf.read_tail(fifo)
-            serverconf.backup(link)
-            self.assertEqual(os.listdir(tmp).count("server.cfg.bak"), 0)
+            with self.assertRaises(OSError):
+                serverconf.backup(link)
+            self.assertFalse([n for n in os.listdir(tmp) if ".bak." in n])
+
+    def test_cvars_in_a_crlf_file(self):
+        text = 'hostname "Old"\r\nrcon_password "secret"   // admin\r\nsv_password "pw"\r\n'
+        self.assertEqual(serverconf.read_cvar(text, "rcon_password"), "secret")
+        self.assertEqual(serverconf.read_cvar(text, "sv_password"), "pw")
+        self.assertEqual(serverconf.read_cvar('z_difficulty Hard\r\n', "z_difficulty"), "Hard")
+        once = serverconf.set_cvar(text, "hostname", "New")
+        self.assertEqual(once, 'hostname "New"\r\nrcon_password "secret"   // admin\r\nsv_password "pw"\r\n')
+        self.assertEqual(serverconf.set_cvar(once, "hostname", "New"), once)
+        self.assertEqual(serverconf.set_cvar(text, "rcon_password", "x").count("rcon_password"), 1)
+        added = serverconf.set_cvar(text, "z_difficulty", "Hard")
+        self.assertTrue(added.endswith('sv_password "pw"\r\nz_difficulty "Hard"\r\n'), added)
+        self.assertNotIn("\n", added.replace("\r\n", ""))  # no bare LF mixed in
+        self.assertEqual(serverconf.set_cvar('hostname "x"\r\nsv_lan 0', "sv_password", "p"),
+                         'hostname "x"\r\nsv_lan 0\r\nsv_password "p"\r\n')
+
+    def test_cvar_names_ignore_case_like_the_engine(self):
+        text = 'Hostname "Mixed"\nRCON_PASSWORD "secret"\n'
+        self.assertEqual(serverconf.read_cvar(text, "hostname"), "Mixed")
+        self.assertEqual(serverconf.read_cvar(text, "rcon_password"), "secret")
+        out = serverconf.set_cvar(text, "hostname", "New")
+        self.assertEqual(out, 'hostname "New"\nRCON_PASSWORD "secret"\n')
+        self.assertEqual(serverconf.set_cvar(out, "hostname", "New").lower().count("hostname"), 1)
 
     def test_set_env_value(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -269,6 +318,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def setUp(self):
         SENT.clear()
+        GAME.update(cvars=CVAR_REPLY, tank_run=None)
         rcon._auth_blocked_until = 0.0
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -652,6 +702,111 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/settings", {"hostname": "Free"})[0].status, 200)
         self.assertEqual(read(self.httpd.app.cfg.lock_path), "")
 
+    def test_tank_run_toggle(self):
+        self.login()
+        GAME["tank_run"] = False
+        _, overview = self.request("GET", "/api/overview")
+        self.assertIs(overview["game"]["tank_run"], False)
+
+        response, data = self.request("POST", "/api/tankrun", {"on": True})
+        self.assertEqual(response.status, 200, data)
+        self.assertIn("Tank run on", data["message"])
+        self.assertEqual(SENT[-2:], ["l4d2_extras_tankrun", "sm_tankrun on"])
+        # The switch shows the new state at once, not after the cvar cache runs out.
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["tank_run"], True)
+
+        self.assertEqual(self.request("POST", "/api/tankrun", {"on": False})[0].status, 200)
+        self.assertEqual(SENT[-1], "sm_tankrun off")
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["tank_run"], False)
+
+    def test_tank_run_without_the_plugin(self):
+        self.login()
+        # No plugin: the overview says so (the switch is greyed out) and nothing is sent.
+        self.assertIsNone(self.request("GET", "/api/overview")[1]["game"]["tank_run"])
+        SENT.clear()
+        response, data = self.request("POST", "/api/tankrun", {"on": True})
+        self.assertEqual(response.status, 409)
+        self.assertIn("isn't available", data["error"])
+        self.assertEqual(SENT, ["l4d2_extras_tankrun"])
+
+    def test_a_difficulty_the_panel_does_not_offer_does_not_block_saving(self):
+        with open(self.cfg_path, "a") as fh:
+            fh.write('z_difficulty "Expert"\n')
+        self.login()
+        _, settings = self.request("GET", "/api/settings")
+        response, data = self.request("POST", "/api/settings", {
+            "hostname": "Renamed", "difficulty": settings["difficulty"]})
+        self.assertEqual((response.status, data.get("changed")), (200, ["server name"]))
+        self.assertEqual(self.request("POST", "/api/settings", {"difficulty": "nightmare"})[0].status, 400)
+
+    def test_mode_numbers_are_plain_digits(self):
+        self.login()
+        before = read(self.cfg_path)
+        response, _ = self.request("POST", "/api/settings", {"hostname": "Half", "mode": "mutation1\u0663"})
+        self.assertEqual(response.status, 400)
+        self.assertEqual(read(self.cfg_path), before)     # refused before anything was written
+
+    def test_tank_run_needs_a_plain_on_or_off(self):
+        self.login()
+        GAME["tank_run"] = False
+        for body in ({}, {"on": "on; quit"}, {"on": 1}, {"on": None}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/tankrun", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+
+    def test_modes_and_difficulties_carry_their_names(self):
+        self.login()
+        _, settings = self.request("GET", "/api/settings")
+        self.assertEqual(settings["choices"]["modes"], list(panel_mod.MODES))
+        self.assertEqual(settings["labels"]["modes"]["mutation4"], "Hard Eight (8 special infected)")
+        self.assertEqual(settings["labels"]["difficulties"],
+                         {"Easy": "Easy", "Normal": "Normal", "Hard": "Advanced", "Impossible": "Expert"})
+
+        # What the game reports, in whatever case, is named the same way.
+        GAME["cvars"] = '"z_difficulty" = "impossible"\n"sv_cheats" = "0"\n"mp_gamemode" = "Mutation4"\n'
+        self.httpd.app.panel.invalidate()
+        game = self.request("GET", "/api/overview")[1]["game"]
+        self.assertEqual((game["difficulty"], game["difficulty_label"]), ("Impossible", "Expert"))
+        self.assertEqual((game["mode"], game["mode_label"]), ("mutation4", "Hard Eight (8 special infected)"))
+
+    def test_a_mutation_can_be_the_default_mode(self):
+        self.login()
+        for mode in ("mutation4", "community5", "mutation12"):
+            response, data = self.request("POST", "/api/settings", {"mode": mode})
+            self.assertEqual((response.status, data.get("changed")), (200, ["game mode"]), mode)
+            self.assertIn(f"L4D2_MODE={mode}\n", read(self.env_path))
+        for mode in ("mutation0", "mutation123", "community", ["coop"], 4):
+            self.assertEqual(self.request("POST", "/api/settings", {"mode": mode})[0].status, 400, mode)
+        self.assertIn("L4D2_MODE=mutation12\n", read(self.env_path))
+
+    def test_a_mode_the_panel_does_not_offer_does_not_block_saving(self):
+        # Set by hand or by an older setup: it stays selectable and other settings still save.
+        with open(self.env_path, "a") as fh:
+            fh.write("L4D2_MODE=survival\nL4D2_MAP=\n")
+        self.login()
+        _, settings = self.request("GET", "/api/settings")
+        self.assertEqual(settings["choices"]["modes"][-1], "survival")
+        self.assertEqual(settings["labels"]["modes"]["survival"], "Survival")
+        response, data = self.request("POST", "/api/settings", {
+            "hostname": "Renamed", "mode": "survival", "default_map": ""})
+        self.assertEqual((response.status, data.get("changed")), (200, ["server name"]))
+        self.assertIn("L4D2_MODE=survival", read(self.env_path))
+
+    def test_panel_modes_match_the_in_game_menus(self):
+        # The !mode and !difficulty menus of the admin extras plugin and the panel
+        # must offer the same things under the same names (the panel adds versus).
+        source = read(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "cli", "plugins", "l4d2_admin_extras.sp"))
+
+        def table(name):
+            block = re.search(rf"{name}\[\]\[\]\[\] =\s*\{{(.*?)\}};", source, re.S).group(1)
+            return dict(re.findall(r'\{\s*"([^"]*)",\s*"([^"]*)"\s*\}', block))
+
+        modes = dict(panel_mod.MODE_LABELS)
+        self.assertEqual(modes.pop("versus"), "Versus")
+        self.assertEqual(modes, table("g_sModes"))
+        self.assertEqual(panel_mod.DIFFICULTY_LABELS, table("g_sDifficulty"))
+
     def test_cheats_toggle(self):
         self.login()
         self.assertEqual(self.request("POST", "/api/settings", {"cheats": True})[0].status, 200)
@@ -673,6 +828,182 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("rcon_password is empty", data["warnings"][0])
         self.assertEqual(self.request("POST", "/api/config", {"text": "x" * 70000})[0].status, 400)
         self.assertEqual(self.request("POST", "/api/config", {"text": None})[0].status, 400)
+
+    # ------------------------------------------- files the game user controls
+    def assert_saves_refused(self):
+        """Neither save path may write anything, and both must say why."""
+        for path, body in (("/api/settings", {"hostname": "zzz"}),
+                           ("/api/config", {"text": 'hostname "zzz"\n'})):
+            response, data = self.request("POST", path, body)
+            self.assertEqual(response.status, 500, (path, data))
+            self.assertIn("server.cfg", data["error"])
+        self.assertFalse([n for n in os.listdir(self.cfg_dir) if ".bak." in n or n.startswith(".panel-")])
+
+    def test_saves_refuse_a_server_cfg_that_is_a_symlink(self):
+        self.login()
+        victim = os.path.join(self.tmp.name, "victim.cfg")
+        with open(victim, "w") as fh:
+            fh.write('hostname "Victim"\nrcon_password "secret"\n')
+        os.unlink(self.cfg_path)
+        os.symlink(victim, self.cfg_path)
+        for path in ("/api/settings", "/api/config"):
+            response, data = self.request("GET", path)
+            self.assertEqual(response.status, 500, (path, data))
+            self.assertNotIn("Victim", json.dumps(data))
+        self.assert_saves_refused()
+        self.assertTrue(os.path.islink(self.cfg_path))
+        self.assertEqual(read(victim), 'hostname "Victim"\nrcon_password "secret"\n')
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read a mode-000 file")
+    def test_saves_refuse_an_unreadable_server_cfg(self):
+        self.login()
+        before = read(self.cfg_path)
+        os.chmod(self.cfg_path, 0)
+        self.addCleanup(os.chmod, self.cfg_path, 0o644)
+        self.assertEqual(self.request("GET", "/api/config")[0].status, 500)
+        self.assert_saves_refused()
+        os.chmod(self.cfg_path, 0o644)
+        self.assertEqual(read(self.cfg_path), before)
+
+    def test_a_missing_server_cfg_is_created(self):
+        self.login()
+        os.unlink(self.cfg_path)
+        self.assertEqual(self.request("GET", "/api/config")[1]["text"], "")
+        self.assertEqual(self.request("POST", "/api/settings", {"hostname": "Fresh"})[0].status, 200)
+        self.assertEqual(read(self.cfg_path), 'hostname "Fresh"\n')
+
+    @unittest.skipIf(os.geteuid() == 0, "root can write a read-only directory")
+    def test_saves_through_a_symlinked_cfg_dir_create_nothing_in_the_target(self):
+        # cfg -> a directory the panel's identity can't write. As root the
+        # identity is the game user, so this is what the kernel enforces there.
+        self.login()
+        target = os.path.join(self.tmp.name, "target")
+        os.makedirs(target)
+        with open(os.path.join(target, "server.cfg"), "w") as fh:
+            fh.write('hostname "Target"\n')
+        os.chmod(target, 0o555)
+        self.addCleanup(os.chmod, target, 0o755)
+        os.rename(self.cfg_dir, self.cfg_dir + ".real")
+        os.symlink(target, self.cfg_dir)
+        for path, body in (("/api/settings", {"hostname": "zzz"}),
+                           ("/api/config", {"text": 'hostname "zzz"\n'})):
+            response, data = self.request("POST", path, body)
+            self.assertEqual(response.status, 500, (path, data))
+        self.assertEqual(os.listdir(target), ["server.cfg"])
+        self.assertEqual(read(os.path.join(target, "server.cfg")), 'hostname "Target"\n')
+
+    def test_crlf_server_cfg_keeps_rcon_and_its_line_endings(self):
+        self.login()
+        with open(self.cfg_path, "w", newline="") as fh:
+            fh.write('Hostname "Test Server"\r\nsv_password "joinme"\r\nrcon_password "secret"\r\n'
+                     'z_difficulty "Normal"\r\n')
+        _, settings = self.request("GET", "/api/settings")
+        self.assertTrue(settings["rcon_enabled"])
+        self.assertEqual(settings["hostname"], "Test Server")
+        _, overview = self.request("GET", "/api/overview")
+        self.assertTrue(overview["game"]["reachable"])
+        self.assertEqual(len(overview["players"]), 1)
+        for _ in range(2):
+            response, data = self.request("POST", "/api/settings", {"hostname": "Renamed", "difficulty": "hard"})
+            self.assertEqual(response.status, 200, data)
+        with open(self.cfg_path, newline="") as fh:
+            cfg = fh.read()
+        self.assertEqual(cfg, 'hostname "Renamed"\r\nsv_password "joinme"\r\nrcon_password "secret"\r\n'
+                              'z_difficulty "Hard"\r\n')
+
+    def test_as_root_every_game_file_access_runs_as_the_game_user(self):
+        # Fake "the panel is root": identity() resolves the game user (here: us,
+        # with supplementary groups left alone, since only root may set them).
+        # Booby-trap the in-process readers and writers for every game path, so
+        # the panel only works if all of that I/O goes through the child.
+        srv, home = os.path.join(self.tmp.name, "srv"), self.tmp.name
+        game_paths = lambda p: str(p).startswith(srv) or os.path.basename(str(p)) in ("maps.json", "SERVER-INFO.txt")
+        asked, ops = [], []
+
+        def trap(real):
+            def wrapped(path, *args, **kwargs):
+                if game_paths(path):
+                    raise AssertionError(f"in-process access to {path}")
+                return real(path, *args, **kwargs)
+            return wrapped
+
+        def fake_identity(user, euid=None):
+            asked.append(user)
+            return os.getuid(), os.getgid(), None
+
+        real_run_child = gameio.run_child
+
+        def recording_run_child(ident, op, args):
+            ops.append(op)
+            self.assertEqual(gameio.child_invocation(ident)[1]["user"], os.getuid())
+            return real_run_child(ident, op, args)
+
+        with mock.patch.object(gameio, "identity", fake_identity), \
+                mock.patch.object(gameio, "run_child", recording_run_child), \
+                mock.patch.object(serverconf, "open_regular", trap(serverconf.open_regular)), \
+                mock.patch.object(serverconf, "atomic_write", trap(serverconf.atomic_write)), \
+                mock.patch.object(serverconf, "backup", trap(serverconf.backup)):
+            self.login()
+            for path in ("/api/overview", "/api/settings", "/api/config", "/api/logs", "/api/maps"):
+                response, data = self.request("GET", path)
+                self.assertEqual(response.status, 200, (path, data))
+            self.assertTrue(data["custom"][0]["missing"])
+            self.assertEqual(self.request("GET", "/api/logs?lines=1")[1]["lines"], ["line three"])
+            response, data = self.request("POST", "/api/settings", {"hostname": "As Game User", "password": "pw2"})
+            self.assertEqual(response.status, 200, data)
+            response, data = self.request("POST", "/api/config", {"text": read(self.cfg_path) + "sv_lan 0\n"})
+            self.assertEqual(response.status, 200, data)
+        self.assertEqual(set(asked), {"no-such-user-l4d2"})
+        self.assertLessEqual({"read", "tail", "save", "update_info", "exists"}, set(ops))
+        self.assertIn('hostname "As Game User"', read(self.cfg_path))
+        self.assertIn("sv_lan 0", read(self.cfg_path))
+        self.assertIn("password pw2", read(os.path.join(home, "SERVER-INFO.txt")))
+        self.assertTrue([n for n in os.listdir(self.cfg_dir) if ".bak." in n])
+
+
+class GameIoTests(unittest.TestCase):
+    def test_identity_is_only_used_as_root(self):
+        me = pwd.getpwuid(os.getuid())
+        self.assertIsNone(gameio.identity(me.pw_name, euid=1000))
+        self.assertEqual(gameio.identity(me.pw_name, euid=0),
+                         (me.pw_uid, me.pw_gid, os.getgrouplist(me.pw_name, me.pw_gid)))
+        # Root with no such game user must refuse, never fall back to root.
+        with self.assertRaises(OSError):
+            gameio.identity("no-such-user-l4d2", euid=0)
+
+    def test_child_invocation_drops_to_the_game_user(self):
+        argv, kwargs = gameio.child_invocation((1234, 5678, [5678, 27]))
+        self.assertEqual(argv[:3], [sys.executable, "-I", "-c"])
+        self.assertEqual((kwargs["user"], kwargs["group"], kwargs["extra_groups"]), (1234, 5678, [5678, 27]))
+        self.assertEqual(kwargs["cwd"], "/")
+        self.assertNotIn("PYTHONPATH", kwargs["env"])
+        self.assertNotIn("shell", kwargs)
+        self.assertNotIn("user", gameio.child_invocation(None)[1])
+
+    def test_child_round_trip(self):
+        me = (os.getuid(), os.getgid(), None)  # really switches uid/gid, to ourselves
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "server.cfg")
+            self.assertEqual(gameio.run_child(me, "read", {"path": path}), "")
+            gameio.run_child(me, "save", {"path": path, "text": 'hostname "é"\n'})
+            gameio.run_child(me, "save", {"path": path, "text": 'hostname "b"\n'})
+            self.assertEqual(gameio.run_child(me, "read", {"path": path}), 'hostname "b"\n')
+            self.assertEqual(gameio.run_child(None, "tail", {"path": path, "limit": 3}), 'b"\n')
+            backups = [n for n in os.listdir(tmp) if ".bak." in n]
+            self.assertEqual(len(backups), 1)  # the first save had nothing to back up
+            self.assertEqual(read(os.path.join(tmp, backups[0])), 'hostname "é"\n')
+            with open(os.path.join(tmp, "a.VPK"), "w"):
+                pass
+            self.assertEqual(len(gameio.run_child(me, "vpk_mtimes", {"directory": tmp})), 1)
+            self.assertEqual(gameio.run_child(me, "exists", {"paths": [path, path + "x"]}), [True, False])
+            link = os.path.join(tmp, "link.cfg")
+            os.symlink(path, link)
+            with self.assertRaises(OSError) as caught:
+                gameio.run_child(me, "read", {"path": link})
+            self.assertEqual(caught.exception.errno, errno.ELOOP)
+            with self.assertRaises(OSError):
+                gameio.run_child(me, "save", {"path": link, "text": "x\n"})
+            self.assertTrue(os.path.islink(link))
 
 
 class ConfigLoadTests(unittest.TestCase):

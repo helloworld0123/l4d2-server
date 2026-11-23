@@ -191,6 +191,41 @@ class PasswordFileTests(unittest.TestCase):
     def test_missing_file_is_empty_not_an_error(self):
         self.assertEqual(rcon.read_password("/nonexistent/server.cfg"), "")
 
+    def test_reads_the_password_the_way_the_game_and_the_panel_do(self):
+        for text, want in (
+                ('rcon_password y // comment\n', "y"),
+                ('RCON_PASSWORD "z"\r\n', "z"),
+                ('rcon_password "a"\nRcon_Password "b"\n', "b"),     # the last line wins
+                ('rcon_password\t"has // inside"\n', "has // inside"),
+                ('rcon_password // off\n', ""),
+                ('rcon_password abc\nrcon_password // set above\nrcon_password\n', "abc"),
+                ('rcon_password abc; sv_cheats 1\n', "abc"),
+                ('hostname "foo\u2028rcon_password pwned"\n', ""),    # not a line break for the game
+                ('rcon_password_x "no"\n// rcon_password "commented"\n', ""),
+                ('hostname "x"\n', "")):
+            self.assertEqual(rcon.parse_password(text), want, text)
+
+    def test_bot_and_panel_read_the_same_password(self):
+        from web import serverconf
+        for text in ('rcon_password "s3cr3t"   // comment\n', 'rcon_password y // c\n',
+                     'RCON_PASSWORD "z"\r\n', 'rcon_password "a"\nRcon_Password "b"\n',
+                     'rcon_password abc\nrcon_password // note\n', 'rcon_password ""\n',
+                     'hostname "x"\n', 'rcon_password_x "no"\n'):
+            self.assertEqual(rcon.parse_password(text),
+                             serverconf.read_cvar(text, "rcon_password") or "", text)
+
+    def test_a_link_or_fifo_in_place_of_server_cfg_is_not_read(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            real, link, fifo = (os.path.join(tmp, n) for n in ("real.cfg", "server.cfg", "fifo.cfg"))
+            with open(real, "w") as fh:
+                fh.write('rcon_password "elsewhere"\n')
+            os.symlink(real, link)
+            os.mkfifo(fifo)
+            self.assertEqual(rcon.read_password(real), "elsewhere")
+            self.assertEqual(rcon.read_password(link), "")
+            self.assertEqual(rcon.read_password(fifo), "")     # and does not hang
+
 
 if __name__ == "__main__":
     unittest.main()

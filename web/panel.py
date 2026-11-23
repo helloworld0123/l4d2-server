@@ -8,6 +8,7 @@ because the CLI has no non-interactive command for those.
 
 import collections
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -19,7 +20,7 @@ import time
 
 from bot import jobs, players, rcon, sanitize
 
-from . import serverconf
+from . import gameio, serverconf
 
 OFFICIAL = [
     ("c1m1_hotel", "Dead Center"), ("c2m1_highway", "Dark Carnival"),
@@ -30,8 +31,30 @@ OFFICIAL = [
     ("c11m1_greenhouse", "Dead Air"), ("c12m1_hilltop", "Blood Harvest"),
     ("c13m1_alpinecreek", "Cold Stream"), ("c14m1_junkyard", "The Last Stand"),
 ]
-MODES = ("coop", "realism", "versus")
-DIFFICULTIES = ("Easy", "Normal", "Hard", "Impossible")
+# The game modes and difficulties the panel offers, with the names players
+# know them by. Apart from versus these are the ones the in-game !mode and
+# !difficulty menus offer (cli/plugins/l4d2_admin_extras.sp); a test keeps the
+# two lists in step.
+MODE_LABELS = {
+    "coop": "Co-op",
+    "realism": "Realism",
+    "versus": "Versus",
+    "mutation4": "Hard Eight (8 special infected)",
+    "mutation2": "Headshot!",
+    "mutation3": "Bleed Out",
+    "mutation8": "Ironman",
+    "mutation16": "Hunting Party",
+    "community1": "Special Delivery",
+    "community5": "Death's Door",
+}
+MODES = tuple(MODE_LABELS)
+# Modes a server can be in without the panel offering them: named when shown.
+OTHER_MODE_LABELS = {"survival": "Survival", "scavenge": "Scavenge"}
+# Any other mutation by number, exactly as the in-game !mode accepts them.
+_NUMBERED_MODE_RE = re.compile(r"(?:mutation|community)[1-9][0-9]?")
+DIFFICULTY_LABELS = {"Easy": "Easy", "Normal": "Normal", "Hard": "Advanced", "Impossible": "Expert"}
+DIFFICULTIES = tuple(DIFFICULTY_LABELS)
+TANK_RUN_CVAR = "l4d2_extras_tankrun"
 MIN_SLOTS, MAX_SLOTS = 4, 12
 MAX_LOG_LINES = 500
 OVERVIEW_TTL = 2.0
@@ -39,10 +62,26 @@ CVAR_TTL = 10.0
 JOB_LINES = 400
 
 _WORKSHOP_ID_RE = re.compile(r"[?&]id=(\d{4,20})\b")
-_CVAR_REPLY_RE = re.compile(r'"(z_difficulty|sv_cheats|mp_gamemode)"\s*=\s*"([^"]*)"')
+_CVAR_REPLY_RE = re.compile(r'"(z_difficulty|sv_cheats|mp_gamemode|l4d2_extras_tankrun)"\s*=\s*"([^"]*)"')
 _MAX_PLAYERS_RE = re.compile(r"\((\d+) max\)")
 _OFFICIAL_MAP_RE = re.compile(r"^c(\d{1,2})m\d{1,2}_")
 _CONNECT_RE = re.compile(r"^\s*(?:In-game console:\s*)?(connect \S+)\s*$", re.MULTILINE)
+
+
+def mode_label(mode):
+    return MODE_LABELS.get(mode) or OTHER_MODE_LABELS.get(mode) or mode
+
+
+def _cvar_on(value):
+    """Whether a 0/1 cvar is on, read the way the game does (as a whole number)."""
+    try:
+        return int(float(value)) != 0
+    except ValueError:
+        return False
+
+
+def valid_mode(mode):
+    return isinstance(mode, str) and (mode in MODES or bool(_NUMBERED_MODE_RE.fullmatch(mode)))
 
 
 class PanelError(Exception):
@@ -51,6 +90,12 @@ class PanelError(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
+
+
+def _why(error):
+    if error.errno == errno.ELOOP:
+        return "it is a symbolic link, which the panel won't follow"
+    return error.strerror or str(error)
 
 
 class JobSlot:
@@ -179,6 +224,24 @@ class Panel:
             finally:
                 handle.close()  # closing releases the lock
 
+    def _game(self, op, **args):
+        """Read or write under the game folder, as the game user. Raises OSError."""
+        return gameio.call(self.cfg.game_user, op, **args)
+
+    def _game_text(self, path, limit=serverconf.MAX_CFG_BYTES * 4):
+        """Text of a game-user file for display only: unreadable reads as empty."""
+        try:
+            return self._game("read", path=path, limit=limit)
+        except OSError:
+            return ""
+
+    def _read_cfg(self):
+        """server.cfg's text ("" only when it doesn't exist). Anything else is an error, never empty."""
+        try:
+            return self._game("read", path=self.cfg.cfg_path)
+        except OSError as e:
+            raise PanelError(f"Couldn't read server.cfg: {_why(e)}", 500)
+
     def invalidate(self):
         with self._lock:
             self._overview = (0.0, None)
@@ -236,14 +299,18 @@ class Panel:
         stamp, cached = self._cvars
         if time.time() - stamp < CVAR_TTL:
             return cached
-        ok, out = self.try_rcon("z_difficulty; sv_cheats; mp_gamemode")
-        found = dict(_CVAR_REPLY_RE.findall(out)) if ok else {}
+        # The last one only exists with the admin extras plugin; without it the
+        # console answers "Unknown command" and the name is simply not found.
+        ok, out = self.try_rcon(f"z_difficulty; sv_cheats; mp_gamemode; {TANK_RUN_CVAR}")
+        if not ok:
+            return {}      # not cached: one failed query must not blank the toggles for CVAR_TTL
+        found = dict(_CVAR_REPLY_RE.findall(out))
         self._cvars = (time.time(), found)
         return found
 
     def _index(self):
         try:
-            data = json.loads(serverconf.read_text(self.cfg.index_path, 4 * 1024 * 1024))
+            data = json.loads(self._game_text(self.cfg.index_path, 4 * 1024 * 1024))
         except ValueError:
             return {}
         if not isinstance(data, dict):
@@ -283,13 +350,13 @@ class Panel:
             return 0
         started = time.time() - uptime
         try:
-            return sum(1 for entry in os.scandir(self.cfg.addons_dir)
-                       if entry.name.lower().endswith(".vpk") and entry.stat().st_mtime > started)
+            return sum(1 for mtime in self._game("vpk_mtimes", directory=self.cfg.addons_dir)
+                       if mtime > started)
         except OSError:
             return 0
 
     def _join(self, cfg_text):
-        match = _CONNECT_RE.search(serverconf.read_text(self.cfg.info_path))
+        match = _CONNECT_RE.search(self._game_text(self.cfg.info_path))
         return {
             "connect": match.group(1) if match else None,
             "password": serverconf.read_cvar(cfg_text, "sv_password") or "",
@@ -305,7 +372,7 @@ class Panel:
 
     def _build_overview(self):
         env = self.cfg.server_env
-        cfg_text = serverconf.read_text(self.cfg.cfg_path)
+        cfg_text = self._game_text(self.cfg.cfg_path)
         uptime = self._process_uptime()
 
         ok, out = self.try_rcon("status")
@@ -320,6 +387,10 @@ class Panel:
         campaign_map, campaign = self._campaign(current)
         max_match = _MAX_PLAYERS_RE.search(info.get("players", ""))
         people = players.humans(everyone)
+        # The console reports these in whatever case they were last typed in.
+        difficulty = (cvars.get("z_difficulty") or serverconf.read_cvar(cfg_text, "z_difficulty") or "").capitalize()
+        mode = (cvars.get("mp_gamemode") or env.get("L4D2_MODE", "")).lower()
+        tank_run = cvars.get(TANK_RUN_CVAR)
 
         if uptime is not None:
             started = time.time() - uptime
@@ -349,9 +420,13 @@ class Panel:
                 "humans": len(people),
                 "bots": len(everyone) - len(people),
                 "max_players": int(max_match.group(1)) if max_match else None,
-                "difficulty": cvars.get("z_difficulty") or serverconf.read_cvar(cfg_text, "z_difficulty") or "",
-                "mode": cvars.get("mp_gamemode") or env.get("L4D2_MODE", ""),
+                "difficulty": difficulty,
+                "difficulty_label": DIFFICULTY_LABELS.get(difficulty, difficulty),
+                "mode": mode,
+                "mode_label": mode_label(mode),
                 "cheats": cvars.get("sv_cheats") not in (None, "", "0"),
+                # None: the server has no tank run (the admin extras plugin isn't loaded).
+                "tank_run": None if tank_run is None else _cvar_on(tank_run),
             },
             "players": [{
                 "userid": p.userid,
@@ -375,8 +450,15 @@ class Panel:
 
     def maps(self):
         custom = []
-        for key, item in sorted(self._index().items(),
-                                key=lambda kv: (kv[1].get("campaign") or kv[1].get("title") or "").lower()):
+        items = sorted(self._index().items(),
+                       key=lambda kv: (kv[1].get("campaign") or kv[1].get("title") or "").lower())
+        # maps.json is the game user's: "file" may point anywhere, so ask as them.
+        files = [os.path.join(self.cfg.addons_dir, item.get("file") or "?") for _, item in items]
+        try:
+            present = self._game("exists", paths=files) if files else []
+        except OSError:
+            present = [False] * len(files)
+        for (key, item), found in zip(items, present):
             custom.append({
                 "key": key,
                 "name": item.get("campaign") or item.get("title") or key,
@@ -385,7 +467,7 @@ class Panel:
                 "url": item.get("url"),
                 "source": item.get("source"),
                 "file": item.get("file"),
-                "missing": not os.path.exists(os.path.join(self.cfg.addons_dir, item.get("file") or "?")),
+                "missing": not found,
             })
         return {
             "official": [{"map": name, "name": title} for name, title in OFFICIAL],
@@ -395,28 +477,34 @@ class Panel:
 
     def settings(self):
         env = self.cfg.server_env
-        cfg_text = serverconf.read_text(self.cfg.cfg_path)
+        mode = env.get("L4D2_MODE", "coop")
+        cfg_text = self._read_cfg()
         return {
             "hostname": serverconf.read_cvar(cfg_text, "hostname") or "",
             "password": serverconf.read_cvar(cfg_text, "sv_password") or "",
             "difficulty": (serverconf.read_cvar(cfg_text, "z_difficulty") or "Normal").capitalize(),
-            "mode": env.get("L4D2_MODE", "coop"),
+            "mode": mode,
             "default_map": env.get("L4D2_MAP", ""),
             "slots": self._slots(env),
             "rcon_enabled": bool(self.cfg.rcon_password()),
-            "choices": {"modes": list(MODES), "difficulties": list(DIFFICULTIES),
+            # A mode set some other way (survival, a numbered mutation) stays
+            # selectable, so saving another setting doesn't trip over it.
+            "choices": {"modes": list(MODES) + ([mode] if mode not in MODES else []),
+                        "difficulties": list(DIFFICULTIES),
                         "slots": list(range(MIN_SLOTS, MAX_SLOTS + 1))},
+            "labels": {"modes": {m: mode_label(m) for m in (*MODES, mode)},
+                       "difficulties": dict(DIFFICULTY_LABELS)},
         }
 
     def raw_config(self):
-        return {"text": serverconf.read_text(self.cfg.cfg_path), "path": self.cfg.cfg_path}
+        return {"text": self._read_cfg(), "path": self.cfg.cfg_path}
 
     def logs(self, lines=100):
         count = max(1, min(int(lines), MAX_LOG_LINES))
         try:
-            tail = serverconf.read_tail(self.cfg.log_path).splitlines()[-count:]
+            tail = self._game("tail", path=self.cfg.log_path, limit=256 * 1024).splitlines()[-count:]
         except OSError as e:
-            raise PanelError(f"Can't read the server log: {e.strerror or e}", 404)
+            raise PanelError(f"Can't read the server log: {_why(e)}", 404)
         return {"lines": tail}
 
     def job(self):
@@ -454,6 +542,24 @@ class Panel:
         self.rcon(f'kickid {userid} "{reason}"' if reason else f"kickid {userid}")
         self.invalidate()
         return {"message": "Player kicked."}
+
+    def tank_run(self, on):
+        """Start or stop a tank run: tanks keep coming until the map ends."""
+        if not isinstance(on, bool):
+            raise PanelError("Say whether the tank run should be on or off.")
+        # Asked fresh rather than from the cache: the plugin may have just been
+        # installed, and sm_tankrun on a server without it would do nothing.
+        if TANK_RUN_CVAR not in dict(_CVAR_REPLY_RE.findall(self.rcon(TANK_RUN_CVAR))):
+            raise PanelError("Tank run isn't available on this server. It comes with the mods that more "
+                             "than 4 player slots install (Settings). If they are already installed, "
+                             "update the game files to refresh them.", 409)
+        reply = self.rcon(f"sm_tankrun {'on' if on else 'off'}")
+        self.invalidate()
+        if "unknown command" in reply.lower():
+            # The setting can outlive the plugin that made it.
+            raise PanelError("The admin extras plugin isn't loaded, so the tank run can't be switched. "
+                             "Restart the server, or update the game files to refresh the mods.", 409)
+        return {"message": "Tank run on: tanks keep coming until this map ends." if on else "Tank run off."}
 
     def say(self, text):
         text = sanitize.console_arg(text)
@@ -540,28 +646,34 @@ class Panel:
                 live.append(("password", f'sv_password "{value}"'))
         if "difficulty" in data:
             value = str(data["difficulty"]).capitalize()
-            if value not in DIFFICULTIES:
+            # As with the mode below: a value already in server.cfg that the
+            # panel doesn't offer must not stop the other settings from saving.
+            if value != current["difficulty"] and value not in DIFFICULTIES:
                 raise PanelError("Unknown difficulty.")
             if value != current["difficulty"]:
                 cfg_changes["z_difficulty"] = value
                 live.append(("difficulty", f"z_difficulty {value}"))
 
         mode = data.get("mode")
-        if mode is not None and mode not in MODES:
+        if mode is not None and mode != current["mode"] and not valid_mode(mode):
             raise PanelError("Unknown game mode.")
         default_map = data.get("default_map")
-        if default_map is not None and not sanitize.valid_map(default_map):
+        if default_map is not None and default_map != current["default_map"] and not (
+                isinstance(default_map, str) and sanitize.valid_map(default_map)):
             raise PanelError("That doesn't look like a map name.")
 
         # Everything is validated; from here on we write.
         if cfg_changes:
-            text = serverconf.read_text(self.cfg.cfg_path)
+            text = self._read_cfg()
             for name, value in cfg_changes.items():
                 text = serverconf.set_cvar(text, name, value)
             self._write_cfg(text)
-            serverconf.update_info(self.cfg.info_path,
-                                   hostname=cfg_changes.get("hostname"),
-                                   password=cfg_changes.get("sv_password"))
+            try:
+                self._game("update_info", path=self.cfg.info_path,
+                           hostname=cfg_changes.get("hostname"),
+                           password=cfg_changes.get("sv_password"))
+            except OSError:
+                pass  # best effort, like update_info itself
             for label, command in live:
                 changed.append(label)
                 ok, _ = self.try_rcon(command)
@@ -586,11 +698,12 @@ class Panel:
                 "restart_needed": mode is not None and mode != current["mode"]}
 
     def _write_cfg(self, text):
+        # The save re-reads the file for the backup and writes nothing when that
+        # fails: an unreadable or linked server.cfg is never replaced blind.
         try:
-            serverconf.backup(self.cfg.cfg_path)
-            serverconf.atomic_write(self.cfg.cfg_path, text)
+            self._game("save", path=self.cfg.cfg_path, text=text)
         except OSError as e:
-            raise PanelError(f"Couldn't write server.cfg: {e.strerror or e}", 500)
+            raise PanelError(f"Couldn't write server.cfg: {_why(e)}", 500)
 
     def save_raw_config(self, text, apply_now=False):
         if not isinstance(text, str) or "\x00" in text:

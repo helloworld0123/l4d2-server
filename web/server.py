@@ -75,6 +75,7 @@ POST_ROUTES = {
     "/api/control": (lambda p, b: p.control(b.get("action")), lambda b: b.get("action")),
     "/api/map": (lambda p, b: p.change_map(b.get("name"), bool(b.get("default"))), lambda b: b.get("name")),
     "/api/kick": (lambda p, b: p.kick(b.get("userid"), b.get("reason") or ""), lambda b: b.get("userid")),
+    "/api/tankrun": (lambda p, b: p.tank_run(b.get("on")), lambda b: "on" if b.get("on") is True else "off"),
     "/api/say": (lambda p, b: p.say(b.get("text")), lambda b: ""),
     "/api/rcon": (lambda p, b: p.console(b.get("command")), lambda b: _first_word(b.get("command"))),
     "/api/maps/add": (lambda p, b: p.add_maps(b.get("links")), lambda b: b.get("links")),

@@ -4,7 +4,7 @@ import os
 
 from bot.config import load_env_file
 
-from . import serverconf
+from . import gameio, serverconf
 
 WEB_ENV = os.environ.get("L4D2_WEB_ENV", "/etc/l4d2-web.env")
 SERVER_ENV = os.environ.get("L4D2_ENV", "/etc/l4d2.env")
@@ -41,6 +41,11 @@ class WebConfig:
         return self.server_env.get("L4D2_DIR", "/home/l4d2/l4d2server")
 
     @property
+    def game_user(self):
+        """Who owns the game files: every access to them is made as this user (see gameio)."""
+        return self.server_env.get("L4D2_USER", "l4d2")
+
+    @property
     def home(self):
         return self.server_env.get("L4D2_HOME", "/home/l4d2")
 
@@ -75,7 +80,11 @@ class WebConfig:
 
     def rcon_password(self):
         """Re-read every time, so config edits apply without a panel restart."""
-        return (serverconf.read_cvar(serverconf.read_text(self.cfg_path), "rcon_password") or "").strip()
+        try:
+            text = gameio.call(self.game_user, "read", path=self.cfg_path)
+        except OSError:
+            return ""
+        return (serverconf.read_cvar(text, "rcon_password") or "").strip()
 
     @classmethod
     def load(cls, path=WEB_ENV, server_env_path=SERVER_ENV):

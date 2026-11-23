@@ -85,9 +85,45 @@ command -v python3 >/dev/null 2>&1 || die_box "python3 is missing. Install it wi
 . "$SERVER_ENV"
 CFG_FILE="${L4D2_DIR:-/home/l4d2/l4d2server}/left4dead2/cfg/server.cfg"
 
-# server.cfg sits in a directory the unprivileged game user can write to. If it
-# has been swapped for a link, editing it as root would edit the link's target.
-[[ -L "$CFG_FILE" || ! -f "$CFG_FILE" ]] \
+GAME_USER="${L4D2_USER:-l4d2}"
+# server.cfg sits in a folder the unprivileged game user owns, so they can swap
+# the file, or any folder above it, for a link to something of root's at any
+# moment. Checking first and then writing as root can't close that race, so
+# every read, edit and backup of server.cfg runs as the game user instead and
+# the kernel enforces the boundary. (sudo also resets the environment, so an
+# admin's own $TMUX does not leak into the game user's tmux calls.)
+AS_GAME_USER=(sudo -u "$GAME_USER" --)
+
+# Sets rcon_password in the server.cfg at $1 to the password read from stdin,
+# after saving a backup next to it. Run entirely as the game user, and the
+# password comes in on stdin so it never shows up in the process list.
+set_rcon_password() {
+  "${AS_GAME_USER[@]}" bash -c '
+    cfg=$1
+    IFS= read -r pw || exit 1
+    cd / || exit 1
+    [[ -f $cfg ]] || exit 1
+    # noclobber: a name planted ahead of time (even a link) is refused, not
+    # written through.
+    ( umask 077; set -C; cat -- "$cfg" >"$cfg.bak.$(date +%s)" ) || exit 1
+    tmp=$(mktemp "$cfg.XXXXXX") || exit 1
+    found=""
+    # Any case, like the game reads it, and only this cvar (not rcon_password_x).
+    shopt -s nocasematch
+    re="^[[:space:]]*rcon_password([[:space:]\"]|\$)"
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line =~ $re ]]; then
+        printf "rcon_password \"%s\"\n" "$pw"; found=1
+      else
+        printf "%s\n" "$line"
+      fi
+    done <"$cfg" >"$tmp" || { rm -f -- "$tmp"; exit 1; }
+    [[ -n $found ]] || printf "\nrcon_password \"%s\"\n" "$pw" >>"$tmp"
+    { chmod 640 -- "$tmp" && mv -f -- "$tmp" "$cfg"; } || { rm -f -- "$tmp"; exit 1; }
+  ' set_rcon_password "$1"
+}
+
+[[ -L "$CFG_FILE" ]] || ! "${AS_GAME_USER[@]}" test -f "$CFG_FILE" \
   && die_box "$CFG_FILE is missing or is not a regular file.
 
 Refusing to touch it. Check that file, then run this again."
@@ -115,7 +151,17 @@ group and don't share the invite link.
 You'll need a bot token from @BotFather. Continue?" 18 72 || cancelled
 
 # ---------------------------------------------------------------- token
-msg "First, create the bot:
+# The token is a secret, so it never goes on a command line (whiptail's or
+# python's), where any local user could read it from the process list. An
+# existing one is not pre-filled either: only its last few characters are shown.
+TOKEN=""
+if [[ -n "$OLD_TOKEN" ]] && whiptail --title "$TITLE" --yesno \
+"A bot token is already set up (ending in ...${OLD_TOKEN: -4}).
+
+Keep using it?   (No = paste a new one)" 11 72; then
+  TOKEN="$OLD_TOKEN"
+else
+  msg "First, create the bot:
 
  1. Open Telegram and search for  @BotFather
  2. Send  /newbot
@@ -123,18 +169,21 @@ msg "First, create the bot:
  4. BotFather replies with a token that looks like
       123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
  5. Copy it - you'll paste it on the next screen" 18
+fi
 
 BOT_USERNAME=""
 while :; do
-  TOKEN=$(ask_input "Paste the bot token from @BotFather:" "$OLD_TOKEN") || cancelled
-  TOKEN=$(tr -d ' \t\r\n' <<<"$TOKEN")
-  [[ -z "$TOKEN" ]] && { msg "The token can't be empty." 8; continue; }
+  if [[ -z "$TOKEN" ]]; then
+    TOKEN=$(ask_input "Paste the bot token from @BotFather:" "") || cancelled
+    TOKEN=$(tr -d ' \t\r\n' <<<"$TOKEN")
+    [[ -z "$TOKEN" ]] && { msg "The token can't be empty." 8; continue; }
+  fi
 
-  BOT_USERNAME=$(python3 - "$TOKEN" <<'PY'
-import json, sys, urllib.request
+  BOT_USERNAME=$(TG_TOKEN="$TOKEN" python3 -I - <<'PY'
+import json, os, urllib.request
 try:
     with urllib.request.urlopen(
-        f"https://api.telegram.org/bot{sys.argv[1]}/getMe", timeout=20
+        f"https://api.telegram.org/bot{os.environ['TG_TOKEN']}/getMe", timeout=20
     ) as r:
         print(json.load(r)["result"]["username"])
 except Exception:
@@ -142,6 +191,7 @@ except Exception:
 PY
 )
   [[ -n "$BOT_USERNAME" ]] && break
+  TOKEN=""
   whiptail --title "$TITLE" --yesno \
 "Telegram didn't accept that token.
 
@@ -171,11 +221,11 @@ and the bar closes immediately - that's normal.
 Press OK and a progress bar will wait for it." 20
 
   RESULT=$(mktemp)
-  python3 - "$TOKEN" "$RESULT" 2>>"$LOG" <<'PY' | whiptail --title "$TITLE" --gauge \
+  TG_TOKEN="$TOKEN" python3 -I - "$RESULT" 2>>"$LOG" <<'PY' | whiptail --title "$TITLE" --gauge \
     "Watching for @$BOT_USERNAME to appear in a chat...\n\nAdd it to your group now. This closes as soon as it shows up." 10 72 0
-import json, sys, time, urllib.parse, urllib.request
+import json, os, sys, time, urllib.parse, urllib.request
 
-token, out_path = sys.argv[1], sys.argv[2]
+token, out_path = os.environ["TG_TOKEN"], sys.argv[1]
 WINDOW = 180.0
 deadline = time.time() + WINDOW
 fresh, stale, offset = {}, {}, None
@@ -303,7 +353,8 @@ Use it?   (No = go back and try the group again)" 16 72 || continue
 done
 
 # ---------------------------------------------------------------- RCON
-RCON_NOW=$(grep -oP '^\s*rcon_password\s+"?\K[^"]*' "$CFG_FILE" 2>/dev/null | head -1)
+RCON_NOW=$("${AS_GAME_USER[@]}" cat -- "$CFG_FILE" 2>/dev/null \
+  | grep -oP '^\s*rcon_password\s+"?\K[^"]*' | head -1)
 if [[ -z "${RCON_NOW// }" ]]; then
   if whiptail --title "$TITLE" --yesno \
 "Remote admin (RCON) is currently off.
@@ -314,17 +365,17 @@ The bot needs it for the live commands:
 Turn it on now with a randomly generated password?
 (Nothing is exposed to the internet - it stays on this machine.)" 17 72; then
     NEW_RCON=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
-    cp -a "$CFG_FILE" "$CFG_FILE.bak.$(date +%s)"
-    if grep -q '^\s*rcon_password' "$CFG_FILE"; then
-      sed -i "s|^\s*rcon_password.*|rcon_password \"$NEW_RCON\"|" "$CFG_FILE"
+    if printf '%s\n' "$NEW_RCON" | set_rcon_password "$CFG_FILE" 2>>"$LOG"; then
+      # Apply to the running server without disconnecting anyone. The command
+      # goes through a tmux buffer on stdin rather than send-keys arguments,
+      # which anyone could read from the process list.
+      printf 'rcon_password %s' "$NEW_RCON" | "${AS_GAME_USER[@]}" sh -c \
+        'tmux load-buffer -b l4d2-setup - && tmux paste-buffer -d -b l4d2-setup -t l4d2 && tmux send-keys -t l4d2 Enter' \
+        >/dev/null 2>&1
+      RCON_NOTE="RCON was enabled and applied to the running server."
     else
-      printf '\nrcon_password "%s"\n' "$NEW_RCON" >>"$CFG_FILE"
+      RCON_NOTE="Could not update $CFG_FILE as $GAME_USER, so RCON stayed off. See $LOG"
     fi
-    chown -h "${L4D2_USER:-l4d2}:${L4D2_USER:-l4d2}" "$CFG_FILE"
-    [[ -L "$CFG_FILE" ]] || chmod 640 "$CFG_FILE"
-    # Apply to the running server without disconnecting anyone.
-    sudo -u "${L4D2_USER:-l4d2}" tmux send-keys -t l4d2 "rcon_password $NEW_RCON" Enter 2>/dev/null
-    RCON_NOTE="RCON was enabled and applied to the running server."
   else
     RCON_NOTE="RCON stayed off - /players, /kick, /say and /cheats will not work."
   fi
@@ -375,8 +426,19 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 -m bot.main
 Restart=always
 RestartSec=10
-# Deliberately not sandboxed: the l4d2 CLI this runs writes under /home/l4d2,
-# and ProtectHome/PrivateTmp would be inherited and break map installs.
+# Only light sandboxing: the l4d2 CLI this runs writes under /home/l4d2 and
+# /etc, uses sudo, systemctl and tmux, and its children inherit all of this, so
+# ProtectHome/ProtectSystem/PrivateTmp/NoNewPrivileges would break it. The
+# settings below only take away things neither the CLI nor its children use.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
@@ -405,9 +467,11 @@ Manage the bot:
   journalctl -u l4d2-telegram -f
   sudo bash telegram-bot-setup.sh --uninstall" 22 72
 else
-  whiptail --title "Bot didn't start" --scrolltext --msgbox \
-"The service failed to start. Recent log:
-
-$(journalctl -u l4d2-telegram -n 25 --no-pager 2>&1)" 24 90
+  # The log can hold anything the service printed, so it is shown from a
+  # private file rather than passed to whiptail on its command line.
+  LOG_VIEW=$(mktemp)
+  { printf '%s\n\n' "The service failed to start. Recent log:"; journalctl -u l4d2-telegram -n 25 --no-pager 2>&1; } >"$LOG_VIEW"
+  whiptail --title "Bot didn't start" --scrolltext --textbox "$LOG_VIEW" 24 90
+  rm -f "$LOG_VIEW"
   exit 1
 fi

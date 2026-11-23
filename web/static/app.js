@@ -4,8 +4,7 @@
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const POLL_MS = 4000;
-const MODE_LABELS = { coop: "Co-op", realism: "Realism", versus: "Versus", survival: "Survival", scavenge: "Scavenge" };
-const DIFFICULTY_LABELS = { Easy: "Easy", Normal: "Normal", Hard: "Advanced", Impossible: "Expert" };
+const TANK_RUN_NOTE = "Tanks keep coming until the map ends.";
 
 const state = { overview: null, maps: null, tab: "overview", jobSeen: null, jobHidden: null, timers: {} };
 
@@ -129,8 +128,9 @@ function renderOverview(o) {
   $("#t-bots").textContent = game.reachable && game.bots ? `+ ${game.bots} bot survivors` : "";
   $("#t-map").textContent = game.campaign || game.map || "–";
   $("#t-campaign").textContent = game.campaign ? game.map : "";
-  $("#t-mode").textContent = MODE_LABELS[game.mode] || game.mode || "–";
-  $("#t-difficulty").textContent = (DIFFICULTY_LABELS[game.difficulty] || game.difficulty || "") + (game.cheats ? " · cheats on" : "");
+  $("#t-mode").textContent = game.mode_label || "–";
+  $("#t-difficulty").textContent = [game.difficulty_label, game.cheats && "cheats on", game.tank_run && "tank run"]
+    .filter(Boolean).join(" · ");
   $("#t-uptime").textContent = up ? duration(server.uptime) : "Stopped";
   $("#t-service").textContent = `service: ${server.service}`;
 
@@ -156,6 +156,12 @@ function renderOverview(o) {
   const cheats = $("#cheats");
   if (document.activeElement !== cheats) cheats.checked = game.cheats;
   cheats.disabled = !game.reachable;
+  // tank_run is null when the server has no admin extras plugin to run it.
+  const tankrun = $("#tankrun");
+  if (document.activeElement !== tankrun) tankrun.checked = game.tank_run === true;
+  tankrun.disabled = !game.reachable || game.tank_run == null;
+  $("#tankrun-note").textContent = !game.reachable || game.tank_run != null ? TANK_RUN_NOTE
+    : "Needs the mods that more than 4 player slots install (below).";
   if (state.maps) renderMaps();
   markPlaying();
   if (o.job && o.job.running && state.jobSeen !== o.job.id) pollJob(true);
@@ -309,6 +315,9 @@ async function removeMap(item) {
 
 // ---------------------------------------------------------------- settings
 function fillSelect(select, options, value) {
+  // A current value that isn't among the choices still gets an option: a
+  // select with no matching option would silently submit "" instead.
+  if (value !== "" && value != null && !options.some(([v]) => v === value)) options = [[value, value], ...options];
   select.replaceChildren(...options.map(([v, label]) => h("option", { value: v }, label)));
   select.value = value;
 }
@@ -320,13 +329,12 @@ async function loadSettings() {
     const form = $("#settings-form");
     form.hostname.value = s.hostname;
     form.password.value = s.password;
-    fillSelect(form.difficulty, s.choices.difficulties.map((d) => [d, DIFFICULTY_LABELS[d] || d]), s.difficulty);
-    fillSelect(form.mode, s.choices.modes.map((m) => [m, MODE_LABELS[m] || m]), s.mode);
+    fillSelect(form.difficulty, s.choices.difficulties.map((d) => [d, s.labels.difficulties[d] || d]), s.difficulty);
+    fillSelect(form.mode, s.choices.modes.map((m) => [m, s.labels.modes[m] || m]), s.mode);
     const mapOptions = [
       ...maps.custom.filter((c) => c.first_map && !c.missing).map((c) => [c.first_map, `${c.name} (custom)`]),
       ...maps.official.map((m) => [m.map, m.name]),
     ];
-    if (s.default_map && !mapOptions.some(([v]) => v === s.default_map)) mapOptions.unshift([s.default_map, s.default_map]);
     fillSelect(form.default_map, mapOptions, s.default_map);
     markPlaying();
     fillSelect($("#slots"), s.choices.slots.map((n) => [String(n), n === 4 ? "4 (normal, no mods)" : `${n} players`]), String(s.slots));
@@ -523,6 +531,10 @@ function wire() {
   $("#cheats").addEventListener("change", async (event) => {
     const on = event.target.checked;
     if (!await act(() => api("/api/settings", { cheats: on }), `Cheats ${on ? "on" : "off"}.`)) event.target.checked = !on;
+  });
+  $("#tankrun").addEventListener("change", async (event) => {
+    const on = event.target.checked;
+    if (!await act(() => api("/api/tankrun", { on }))) event.target.checked = !on;
   });
   $("#btn-slots").addEventListener("click", async () => {
     const slots = Number($("#slots").value);

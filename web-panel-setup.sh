@@ -98,9 +98,45 @@ command -v python3 >/dev/null 2>&1 || die_box "python3 is missing. Install it wi
 CFG_FILE="${L4D2_DIR:-/home/l4d2/l4d2server}/left4dead2/cfg/server.cfg"
 GAME_PORT="${L4D2_PORT:-27015}"
 
-# server.cfg sits in a directory the unprivileged game user can write to. If it
-# has been swapped for a link, editing it as root would edit the link's target.
-[[ -L "$CFG_FILE" || ! -f "$CFG_FILE" ]] \
+GAME_USER="${L4D2_USER:-l4d2}"
+# server.cfg sits in a folder the unprivileged game user owns, so they can swap
+# the file, or any folder above it, for a link to something of root's at any
+# moment. Checking first and then writing as root can't close that race, so
+# every read, edit and backup of server.cfg runs as the game user instead and
+# the kernel enforces the boundary. (sudo also resets the environment, so an
+# admin's own $TMUX does not leak into the game user's tmux calls.)
+AS_GAME_USER=(sudo -u "$GAME_USER" --)
+
+# Sets rcon_password in the server.cfg at $1 to the password read from stdin,
+# after saving a backup next to it. Run entirely as the game user, and the
+# password comes in on stdin so it never shows up in the process list.
+set_rcon_password() {
+  "${AS_GAME_USER[@]}" bash -c '
+    cfg=$1
+    IFS= read -r pw || exit 1
+    cd / || exit 1
+    [[ -f $cfg ]] || exit 1
+    # noclobber: a name planted ahead of time (even a link) is refused, not
+    # written through.
+    ( umask 077; set -C; cat -- "$cfg" >"$cfg.bak.$(date +%s)" ) || exit 1
+    tmp=$(mktemp "$cfg.XXXXXX") || exit 1
+    found=""
+    # Any case, like the game reads it, and only this cvar (not rcon_password_x).
+    shopt -s nocasematch
+    re="^[[:space:]]*rcon_password([[:space:]\"]|\$)"
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line =~ $re ]]; then
+        printf "rcon_password \"%s\"\n" "$pw"; found=1
+      else
+        printf "%s\n" "$line"
+      fi
+    done <"$cfg" >"$tmp" || { rm -f -- "$tmp"; exit 1; }
+    [[ -n $found ]] || printf "\nrcon_password \"%s\"\n" "$pw" >>"$tmp"
+    { chmod 640 -- "$tmp" && mv -f -- "$tmp" "$cfg"; } || { rm -f -- "$tmp"; exit 1; }
+  ' set_rcon_password "$1"
+}
+
+[[ -L "$CFG_FILE" ]] || ! "${AS_GAME_USER[@]}" test -f "$CFG_FILE" \
   && die_box "$CFG_FILE is missing or is not a regular file.
 
 Refusing to touch it. Check that file, then run this again."
@@ -190,7 +226,8 @@ done
 unset PASS PASS2
 
 # ---------------------------------------------------------------- RCON
-RCON_NOW=$(grep -oP '^\s*rcon_password\s+"?\K[^"]*' "$CFG_FILE" 2>/dev/null | head -1)
+RCON_NOW=$("${AS_GAME_USER[@]}" cat -- "$CFG_FILE" 2>/dev/null \
+  | grep -oP '^\s*rcon_password\s+"?\K[^"]*' | head -1)
 if [[ -z "${RCON_NOW// }" ]]; then
   if whiptail --title "$TITLE" --yesno \
 "Remote admin (RCON) is currently off.
@@ -201,17 +238,17 @@ without a restart.
 Turn it on now with a randomly generated password?
 (Nothing is exposed to the internet - it stays on this machine.)" 16 72; then
     NEW_RCON=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
-    cp -a "$CFG_FILE" "$CFG_FILE.bak.$(date +%s)"
-    if grep -q '^\s*rcon_password' "$CFG_FILE"; then
-      sed -i "s|^\s*rcon_password.*|rcon_password \"$NEW_RCON\"|" "$CFG_FILE"
+    if printf '%s\n' "$NEW_RCON" | set_rcon_password "$CFG_FILE" 2>>"$LOG"; then
+      # Apply to the running server without disconnecting anyone. The command
+      # goes through a tmux buffer on stdin rather than send-keys arguments,
+      # which anyone could read from the process list.
+      printf 'rcon_password %s' "$NEW_RCON" | "${AS_GAME_USER[@]}" sh -c \
+        'tmux load-buffer -b l4d2-setup - && tmux paste-buffer -d -b l4d2-setup -t l4d2 && tmux send-keys -t l4d2 Enter' \
+        >/dev/null 2>&1
+      RCON_NOTE="RCON was enabled and applied to the running server."
     else
-      printf '\nrcon_password "%s"\n' "$NEW_RCON" >>"$CFG_FILE"
+      RCON_NOTE="Could not update $CFG_FILE as $GAME_USER, so RCON stayed off. See $LOG"
     fi
-    chown -h "${L4D2_USER:-l4d2}:${L4D2_USER:-l4d2}" "$CFG_FILE"
-    [[ -L "$CFG_FILE" ]] || chmod 640 "$CFG_FILE"
-    # Apply to the running server without disconnecting anyone.
-    sudo -u "${L4D2_USER:-l4d2}" tmux send-keys -t l4d2 "rcon_password $NEW_RCON" Enter 2>/dev/null
-    RCON_NOTE="RCON was enabled and applied to the running server."
   else
     RCON_NOTE="RCON stayed off - the player list and live changes will not work."
   fi
@@ -235,7 +272,7 @@ systemctl stop l4d2-web >/dev/null 2>&1
 HOSTNAMES=$(hostname 2>/dev/null | tr -cd 'A-Za-z0-9.-')
 if [[ "$ACCESS" == "tailscale" ]]; then
   TS_NAME=$(tailscale status --json 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null \
+    | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null \
     | tr -cd 'A-Za-z0-9.-')
   [[ -n "$TS_NAME" ]] && HOSTNAMES="$HOSTNAMES ${TS_NAME%%.*} $TS_NAME"
 fi
@@ -275,8 +312,19 @@ ExecStart=/usr/bin/python3 -m web.server
 # Also covers boot, when the Tailscale address may not be up yet.
 Restart=always
 RestartSec=10
-# Deliberately not sandboxed: the l4d2 CLI this runs writes under /home/l4d2,
-# and ProtectHome/PrivateTmp would be inherited and break map installs.
+# Only light sandboxing: the l4d2 CLI this runs writes under /home/l4d2 and
+# /etc, uses sudo, systemctl and tmux, and its children inherit all of this, so
+# ProtectHome/ProtectSystem/PrivateTmp/NoNewPrivileges would break it. The
+# settings below only take away things neither the CLI nor its children use.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
@@ -314,7 +362,7 @@ esac
 UP=""
 for _ in 1 2 3 4 5 6 7 8; do
   sleep 1
-  if python3 -c "import sys, urllib.request; urllib.request.urlopen('http://$CHECK:$PORT/healthz', timeout=3)" 2>>"$LOG"; then
+  if python3 -I -c "import sys, urllib.request; urllib.request.urlopen('http://$CHECK:$PORT/healthz', timeout=3)" 2>>"$LOG"; then
     UP=1; break
   fi
 done
@@ -338,9 +386,11 @@ Manage the panel:
   sudo bash web-panel-setup.sh              change password, port, access
   sudo bash web-panel-setup.sh --uninstall" 24 72
 else
-  whiptail --title "Panel didn't start" --scrolltext --msgbox \
-"The panel isn't answering on $CHECK:$PORT. Recent log:
-
-$(journalctl -u l4d2-web -n 25 --no-pager 2>&1)" 24 90
+  # The log can hold anything the service printed, so it is shown from a
+  # private file rather than passed to whiptail on its command line.
+  LOG_VIEW=$(mktemp)
+  { printf '%s\n\n' "The panel isn't answering on $CHECK:$PORT. Recent log:"; journalctl -u l4d2-web -n 25 --no-pager 2>&1; } >"$LOG_VIEW"
+  whiptail --title "Panel didn't start" --scrolltext --textbox "$LOG_VIEW" 24 90
+  rm -f "$LOG_VIEW"
   exit 1
 fi

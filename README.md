@@ -27,7 +27,7 @@ The script asks a few questions, then shows a progress bar while it installs. Th
 |---|---|
 | Server name | Anything. It shows in the server browser. |
 | Server password | Recommended. Friends need it to join. Leave blank for none. |
-| RCON password | A random one is filled in. The optional [Telegram bot](#telegram-bot) and [web panel](#web-panel) use it to talk to the game. It only works from the server machine itself, not from your own game's console (see [In-game admins](#in-game-admins) for that). Clear it to turn remote admin off. Afterwards it lives in `server.cfg` only. |
+| RCON password | Pick "generate a random password" (the default); it is printed in the terminal when setup finishes. The optional [Telegram bot](#telegram-bot) and [web panel](#web-panel) use it to talk to the game. It only works from the server machine itself, not from your own game's console (see [In-game admins](#in-game-admins) for that). You can also type one or turn remote admin off. Afterwards it lives in `server.cfg` only. |
 | Game mode | Co-op, Realism, or Versus. |
 | Starting campaign | Which map the server loads when it starts. |
 | Difficulty | Easy through Expert. |
@@ -46,10 +46,16 @@ You can switch modes later by running the setup script again.
 
 ### Running setup again
 
-Re-running `l4d2-setup.sh` is safe. The questions start from your current
-server name and passwords, and your `server.cfg` is kept: only the name,
-passwords and difficulty you answer are changed, after a backup is saved next to
-it (the ten newest backups are kept).
+Re-running `l4d2-setup.sh` is safe. Every question starts from what the server
+has now (name, game mode, player slots, starting map, difficulty and network),
+so pressing Enter all the way through changes nothing. A value the menu doesn't
+list, such as a custom starting map, is offered as "Keep current". Existing
+passwords are never shown: you are asked whether to keep them (the default) or
+set new ones. Your `server.cfg` is kept: only the name, passwords and difficulty
+you answer are changed, after a backup is saved next to it (the ten newest
+backups are kept). The network mode is recorded as `L4D2_NET` in
+`/etc/l4d2.env`; for an install from before that, it is read back from the
+firewall rules.
 
 ### Upgrading
 
@@ -101,7 +107,9 @@ l4d2 slots 8
 Co-op normally allows four players. Any number above four (up to twelve)
 installs SourceMod, Metamod, L4DToolZ, Left4DHooks and MultiSlots on the server,
 which add a survivor for each extra player. Players install nothing. Anyone
-left spectating types `!join` in chat. `l4d2 slots 4` switches it back off.
+left spectating types `!join` in chat. `l4d2 slots 4` switches it back off;
+the mods stay installed, and `l4d2 update` refreshes them without switching
+MultiSlots back on.
 
 The install also builds this project's own plugins on the server (sources in
 `cli/plugins/`). One is `l4d2_precache_survivors`, which loads all eight
@@ -141,7 +149,7 @@ Admins also get these chat commands (each works in the game console too, as
 | `!mode [coop\|realism\|mutation4\|...]` | Changes game mode, then reloads the map. No name: a menu of modes; other mutations work by number (`!mode mutation12`). Lasts until the server restarts. |
 | `!restartmap` | Restarts the current chapter. |
 | `!tank`, `!witch`, `!horde` | Spawns one now. |
-| `!tankrun [on\|off]` | Tank run: tanks keep coming until the map ends. `l4d2_extras_tankrun_interval` (25 s) and `l4d2_extras_tankrun_max` (2 at once) tune it. |
+| `!tankrun [on\|off]` | Tank run: tanks keep coming until the map ends. `l4d2_extras_tankrun_interval` (25 s) and `l4d2_extras_tankrun_max` (2 at once) tune it. The [web panel](#web-panel) has a switch for it too. |
 
 They come from a small plugin of this project, `l4d2_admin_extras`. To get it
 on a server that already has the mods, run `sudo bash l4d2-setup.sh --upgrade`
@@ -229,12 +237,23 @@ An optional web page for running the server from a browser, phone included.
 - **Maps.** Switch campaign with one click, install Workshop maps by link,
   remove them, check for updates, copy the links friends need.
 - **Settings.** Server name, join password, difficulty, game mode, starting map,
-  co-op player slots, cheats, plus an editor for `server.cfg` itself.
+  co-op player slots, cheats, tank run, plus an editor for `server.cfg` itself.
 - **Console.** Run console commands and follow the server log.
 
 Name, password and difficulty are saved to `server.cfg` and applied to the
 running game straight away. Game mode and player slots take effect on the next
 restart; the panel shows a "Restart to apply" bar until then.
+
+The game mode list has co-op, realism and versus, plus the same mutations as
+the in-game `!mode` menu (Hard Eight, Headshot!, Bleed Out, Ironman, Hunting
+Party, Special Delivery, Death's Door).
+
+The **Tank run** switch does what `!tankrun` does in game: tanks keep coming
+until the map ends. It needs the admin extras plugin from
+[In-game admins](#in-game-admins), so it is greyed out on a server that never
+had more than four player slots. On a server set up before this switch existed,
+run `sudo bash l4d2-setup.sh --upgrade`, then `l4d2 slots <your number>` again,
+and restart.
 
 ### Setting it up
 
@@ -425,8 +444,9 @@ To keep it that way:
 - The `l4d2` command works on the game folder with the game user's rights and
   only becomes root for systemd and `/etc/l4d2.env`, so nothing left in that
   folder can redirect it at the rest of the system.
-- The RCON password is kept only in `server.cfg`. Setup no longer shows it on
-  screen or copies it into `SERVER-INFO.txt`.
+- The RCON password is kept only in `server.cfg`. Setup prints a newly generated
+  one once in the terminal when it finishes; it never appears in a dialog or in
+  `SERVER-INFO.txt`.
 - If you use the Telegram bot, keep the group private. Group membership is
   the only thing standing between someone and full control of the server.
   If the bot token leaks, open @BotFather, send `/revoke`, and re-run

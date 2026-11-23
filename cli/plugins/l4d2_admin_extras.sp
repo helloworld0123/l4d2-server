@@ -56,6 +56,7 @@ ConVar g_hDifficulty;
 ConVar g_hGameMode;
 ConVar g_hTankRunInterval;
 ConVar g_hTankRunMax;
+ConVar g_hTankRunState;
 Handle g_hTankRunTimer;
 bool g_bTankRun;
 
@@ -72,6 +73,11 @@ public void OnPluginStart()
 	g_hGameMode = FindConVar("mp_gamemode");
 	g_hTankRunInterval = CreateConVar("l4d2_extras_tankrun_interval", "25", "Tank run: seconds between tank spawns.", _, true, 5.0, true, 300.0);
 	g_hTankRunMax = CreateConVar("l4d2_extras_tankrun_max", "2", "Tank run: most tanks alive at once.", _, true, 1.0, true, 8.0);
+	// Follows the tank run, so the web panel can read whether one is on; setting
+	// it does the same as sm_tankrun on/off.
+	g_hTankRunState = CreateConVar("l4d2_extras_tankrun", "0", "Tank run on this map: 1 = on, 0 = off.", _, true, 0.0, true, 1.0);
+	g_hTankRunState.AddChangeHook(OnTankRunStateChanged);
+	g_hTankRunState.SetBool(false);   // a reloaded plugin starts with no tank run, whatever the cvar kept
 
 	if (g_hDifficulty != null)
 	{
@@ -117,6 +123,7 @@ public void OnMapEnd()
 	// TIMER_FLAG_NO_MAPCHANGE, so it is already gone; just forget it.
 	g_bTankRun = false;
 	g_hTankRunTimer = null;
+	g_hTankRunState.SetBool(false);
 }
 
 // ------------------------------------------------------------------ helpers
@@ -404,9 +411,11 @@ void SetTankRun(bool on)
 {
 	if (on == g_bTankRun)
 	{
+		g_hTankRunState.SetBool(on);   // already there; just make sure the cvar says so
 		return;
 	}
 	g_bTankRun = on;
+	g_hTankRunState.SetBool(on);   // its hook calls back here and stops at the check above
 	delete g_hTankRunTimer;
 	if (on)
 	{
@@ -418,6 +427,11 @@ void SetTankRun(bool on)
 	{
 		PrintToChatAll("%sTank run OFF.", TAG);
 	}
+}
+
+void OnTankRunStateChanged(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	SetTankRun(convar.BoolValue);
 }
 
 Action Timer_TankRun(Handle timer)

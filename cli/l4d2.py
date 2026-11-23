@@ -1021,14 +1021,39 @@ def install_left4dhooks():
 
 
 def install_harry_plugins():
+    """Install or refresh the MultiSlots plugins without switching them on or off.
+
+    Each one lands in plugins/ when the slot setting is above 4 and in
+    plugins/disabled/ otherwise; only switch_slot_plugins() moves them.
+    """
     print(f"  MultiSlots + 5+ survivor fixes   {HARRY_COMMIT[:10]}")
     files = [(dest, verified(fetch(HARRY_RAW + src), sha, os.path.basename(src)))
              for src, dest, sha in HARRY_FILES]
+    plugins = os.path.join(SMDIR, "plugins")
+    live = current_slots() > 4
     for dest, data in files:                   # only after every file checked out
-        write_file(os.path.join(SMDIR, dest), data)
-        disabled = os.path.join(SMDIR, "plugins", "disabled", os.path.basename(dest))
-        if dest.endswith(".smx") and os.path.exists(disabled):
-            os.remove(disabled)
+        if not dest.endswith(".smx"):
+            write_file(os.path.join(SMDIR, dest), data)
+            continue
+        name = os.path.basename(dest)
+        on, off = os.path.join(plugins, name), os.path.join(plugins, "disabled", name)
+        write_file(on if live else off, data)
+        stale = off if live else on
+        if os.path.exists(stale):
+            os.remove(stale)
+
+
+def switch_slot_plugins(on):
+    """Move the MultiSlots plugins between plugins/ and plugins/disabled/."""
+    plugins = os.path.join(SMDIR, "plugins")
+    if not os.path.isdir(plugins):
+        return
+    os.makedirs(os.path.join(plugins, "disabled"), exist_ok=True)
+    for p in SLOT_PLUGINS:
+        live, parked = os.path.join(plugins, p), os.path.join(plugins, "disabled", p)
+        src, dst = (parked, live) if on else (live, parked)
+        if os.path.exists(src):
+            os.replace(src, dst)
 
 
 # Plugins of our own, built on the server with the compiler that ships in the
@@ -1128,10 +1153,37 @@ def clean_cvar(value, limit=64):
 
 
 def set_cvar(text, name, value, comment=""):
-    pat = re.compile(r'^([ \t]*)' + re.escape(name) + r'[ \t]+(?:"[^"\n]*"|[^\s/]+)([ \t]*(?://.*)?)$', re.M)
+    """Set one cvar in server.cfg text, replacing the line that sets it now.
+
+    That line may be quoted or not, several words, CRLF-terminated or spelled
+    in another case (Source ignores case in cvar names). Its trailing // comment,
+    anything chained after a ';' and its line ending are kept.
+    """
+    head = re.compile(r'([ \t]*)' + re.escape(name) + r'(?=[ \t"]|//|$)', re.I)
     line = f'{name} "{value}"'
-    if pat.search(text):
-        return pat.sub(lambda m: m.group(1) + line + m.group(2), text)
+    out, found = [], False
+    for raw in re.split(r"(?<=\n)", text):      # not splitlines(): only \n ends a line for the game
+        body = raw.rstrip("\r\n")
+        m = head.match(body)
+        if not m:
+            out.append(raw)
+            continue
+        found = True
+        rest, quoted, cut = body[m.end():], False, None
+        for i, ch in enumerate(rest):             # where the value ends, outside quotes:
+            if ch == '"':                         # at a // comment or a ';' (next command)
+                quoted = not quoted
+            elif not quoted and (ch == ";" or rest.startswith("//", i)):
+                cut = i
+                break
+        tail = ""
+        if cut is not None:
+            while cut > 0 and rest[cut - 1] in " \t":
+                cut -= 1
+            tail = rest[cut:]
+        out.append(m.group(1) + line + tail + raw[len(body):])
+    if found:
+        return "".join(out)
     if text and not text.endswith("\n"):
         text += "\n"
     return text + line + (f"          // {comment}" if comment else "") + "\n"
@@ -1158,11 +1210,13 @@ def cmd_init_config(_args):
 
     Values arrive in the environment, not as arguments, so passwords never show
     in the process list. An existing server.cfg keeps everything else in it:
-    only these four settings are changed, and a backup is taken first.
+    only these four settings are changed, and a backup is taken first. A
+    password variable that is not set at all (as opposed to set but empty)
+    leaves that password's line untouched.
     """
     wanted = [("hostname", clean_cvar(os.environ.get("L4D2_SET_HOSTNAME")) or "My L4D2 Server", ""),
-              ("sv_password", clean_cvar(os.environ.get("L4D2_SET_PASSWORD")), ""),
-              ("rcon_password", clean_cvar(os.environ.get("L4D2_SET_RCON")), "empty = remote admin disabled"),
+              ("sv_password", os.environ.get("L4D2_SET_PASSWORD"), ""),
+              ("rcon_password", os.environ.get("L4D2_SET_RCON"), "empty = remote admin disabled"),
               ("z_difficulty", clean_cvar(os.environ.get("L4D2_SET_DIFFICULTY")) or "Normal", "")]
     text = read_file(CFG, None)
     if text is None or not text.strip():
@@ -1176,7 +1230,9 @@ def cmd_init_config(_args):
         backup_cfg()
         print("server.cfg already exists - updating the name, passwords and difficulty, keeping the rest.")
     for name, value, comment in wanted:
-        text = set_cvar(text, name, value, comment)
+        if value is None:             # a password not passed at all: keep the line as it is
+            continue
+        text = set_cvar(text, name, clean_cvar(value), comment)
     write_file(CFG, text.encode(), 0o640)
     os.chmod(CFG, 0o640)
 
@@ -1203,7 +1259,6 @@ def cmd_slots(args):
     if not MIN_SLOTS <= n <= MAX_SLOTS:
         die(f"slots must be from {MIN_SLOTS} to {MAX_SLOTS} (more than {MAX_SLOTS} gets unstable).")
 
-    plugins = os.path.join(SMDIR, "plugins")
     if n > 4:
         try:
             install_mods(update=mods_installed())
@@ -1211,6 +1266,7 @@ def cmd_slots(args):
             raise                     # not a download problem: main() explains the fix
         except Exception as e:
             die(f"mod install failed: {e}\nNothing was switched on. If it was a download, check the server's internet connection and try again.")
+        switch_slot_plugins(True)     # only now that every part installed
         set_cfg_block([
             f"sv_maxplayers {n}               // L4DToolZ: max human players",
             "sv_force_unreserved 1          // L4DToolZ: no lobby reservation (lobbies cap co-op at 4)",
@@ -1226,12 +1282,7 @@ def cmd_slots(args):
         print(f"\nCo-op now allows {n} players. Survivors 5-{n} spawn automatically as people join.")
         print("Anyone who ends up spectating can type !join in chat.")
     else:
-        if os.path.isdir(plugins):
-            os.makedirs(os.path.join(plugins, "disabled"), exist_ok=True)
-            for p in SLOT_PLUGINS:
-                src = os.path.join(plugins, p)
-                if os.path.exists(src):
-                    os.replace(src, os.path.join(plugins, "disabled", p))
+        switch_slot_plugins(False)
         set_cfg_block(None)
         set_env("L4D2_SLOTS", "4")
         set_env("L4D2_MAXCLIENTS", "18")   # the engine's own limit
@@ -1510,15 +1561,23 @@ def dispatch(cmd, rest):
         print(read_file(INFO, "No info file yet."))
     elif cmd == "menu":
         cmd_menu(rest)
-    else:
+    elif cmd in ("help", "-h", "--help"):
         print(HELP)
+    else:
+        print(f"Unknown command: {cmd!r}. Run 'l4d2 help' for the list.", file=sys.stderr)
+        return 2
 
 
 def main():
     if os.geteuid() != 0:
         os.execvp("sudo", ["sudo", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
-    # resolve file arguments against the directory the user ran us from, before leaving it
-    args = [os.path.abspath(a) if not a.startswith("-") and os.path.isfile(a) else a for a in sys.argv[1:]]
+    args = sys.argv[1:]
+    # addmap takes local files: resolve them against the folder the user ran us
+    # from, before leaving it. Nothing else is touched, the command word least of
+    # all (a file called "init-config" in the current folder must not change it).
+    if args and args[0] in ("addmap", "add"):
+        args = args[:1] + [os.path.abspath(a) if not a.startswith("-") and os.path.isfile(a) else a
+                           for a in args[1:]]
     os.chdir("/tmp")
     if not os.path.exists(ENV_FILE):
         die(f"{ENV_FILE} not found - run l4d2-setup.sh first.")

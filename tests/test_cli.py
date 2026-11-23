@@ -56,7 +56,7 @@ class CliCase(unittest.TestCase):
         self.saved = {k: getattr(cli, k) for k in (
             "ENV", "ENV_FILE", "USER", "HOME", "DIR", "GAME", "ADDONS", "SMDIR", "CFG", "CONLOG",
             "INDEX", "INFO", "STEAMCMD", "LOCK_FILE", "HARRY_FILES", "L4DHOOKS_FILES", "fetch",
-            "systemctl", "server_pid")}
+            "systemctl", "server_pid", "install_mods")}
         self.addCleanup(lambda: [setattr(cli, k, v) for k, v in self.saved.items()])
 
         cli.ENV_FILE = os.path.join(self.root, "etc", "l4d2.env")
@@ -146,7 +146,7 @@ class IndexTests(CliCase):
         with self.assertRaises(TypeError):
             cli.write_file(path, "not bytes")
         self.assertEqual(read(path), "b")
-        self.assertEqual(os.listdir(cli.HOME), ["f", "l4d2server"])
+        self.assertEqual(sorted(os.listdir(cli.HOME)), ["f", "l4d2server"])
 
 
 class InstallTests(CliCase):
@@ -243,11 +243,70 @@ class PinnedModTests(CliCase):
         self.assertFalse(os.path.exists(cli.SMDIR))  # the good first file was not written either
 
         served.update(good)
-        write(os.path.join(cli.SMDIR, "plugins", "disabled", "one.smx"), "old")
-        self.run_quiet(cli.install_harry_plugins)
-        self.assertEqual(read(os.path.join(cli.SMDIR, "plugins", "one.smx")), "ONE")
+        on = os.path.join(cli.SMDIR, "plugins", "one.smx")
+        off = os.path.join(cli.SMDIR, "plugins", "disabled", "one.smx")
+        write(off, "old")
+        self.run_quiet(cli.install_harry_plugins)     # 4 slots: refreshed, but stays switched off
+        self.assertEqual(read(off), "ONE")
+        self.assertFalse(os.path.exists(on))
         self.assertEqual(read(os.path.join(cli.SMDIR, "gamedata", "two.txt")), "TWO")
-        self.assertFalse(os.path.exists(os.path.join(cli.SMDIR, "plugins", "disabled", "one.smx")))
+
+        cli.set_env("L4D2_SLOTS", "8")                # more slots: refreshed where it is live
+        write(on, "old")
+        self.run_quiet(cli.install_harry_plugins)
+        self.assertEqual(read(on), "ONE")
+        self.assertFalse(os.path.exists(off))
+
+    def stub_mod_installs(self, own_fails=False):
+        """install_mods() without downloads: the MultiSlots plugins are real, the rest no-ops."""
+        names = ("install_metamod", "install_sourcemod", "install_l4dtoolz", "install_left4dhooks",
+                 "install_own_plugins")
+        saved = {n: getattr(cli, n) for n in names}
+        self.addCleanup(lambda: [setattr(cli, n, f) for n, f in saved.items()])
+        for n in names:
+            setattr(cli, n, lambda *a, **k: None)
+        if own_fails:
+            def fail():
+                raise RuntimeError("could not build the l4d2_admin_extras plugin")
+            cli.install_own_plugins = fail
+        served = {src: f"new {dest}".encode() for src, dest, _ in cli.HARRY_FILES}
+        cli.HARRY_FILES = [(src, dest, sha(served[src])) for src, dest, _ in cli.HARRY_FILES]
+        cli.fetch = lambda url, timeout=60: served[url[len(cli.HARRY_RAW):]]
+        os.makedirs(os.path.join(cli.ADDONS, "metamod"), exist_ok=True)
+        os.makedirs(os.path.join(cli.GAME, "cfg", "sourcemod"), exist_ok=True)
+
+    def plugin_states(self):
+        plugins = os.path.join(cli.SMDIR, "plugins")
+        return {p: ("on" if os.path.exists(os.path.join(plugins, p)) else "")
+                + ("off" if os.path.exists(os.path.join(plugins, "disabled", p)) else "")
+                for p in cli.SLOT_PLUGINS}
+
+    def test_update_keeps_multislots_off_on_a_four_player_server(self):
+        self.stub_mod_installs()
+        self.run_quiet(cli.cmd_slots, ["8", "--no-restart"])
+        self.assertEqual(set(self.plugin_states().values()), {"on"})
+        self.run_quiet(cli.cmd_slots, ["4", "--no-restart"])
+        self.assertEqual(set(self.plugin_states().values()), {"off"})
+
+        saved = cli.subprocess.run
+        self.addCleanup(lambda: setattr(cli.subprocess, "run", saved))
+        cli.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0})()
+        saved_maps = cli.cmd_updatemaps
+        self.addCleanup(lambda: setattr(cli, "cmd_updatemaps", saved_maps))
+        cli.cmd_updatemaps = lambda flags: []
+        write(os.path.join(cli.DIR, "srcds_run"), "")
+        code, _ = self.run_quiet(cli.cmd_update, [])
+        self.assertEqual(code, 0)
+        self.assertEqual(set(self.plugin_states().values()), {"off"})
+        some = cli.SLOT_PLUGINS[0]
+        self.assertEqual(read(os.path.join(cli.SMDIR, "plugins", "disabled", some)), f"new plugins/{some}")
+
+    def test_failed_install_switches_nothing_on(self):
+        self.stub_mod_installs(own_fails=True)
+        with self.assertRaises(SystemExit):
+            self.run_quiet(cli.cmd_slots, ["8", "--no-restart"])
+        self.assertNotIn("on", "".join(self.plugin_states().values()))
+        self.assertIn("L4D2_SLOTS=4", read(cli.ENV_FILE))
 
     def test_left4dhooks_checks_the_files_inside_the_archive(self):
         def archive(files):
@@ -283,7 +342,10 @@ class ConfigTests(CliCase):
                 "rcon": "L4D2_SET_RCON", "difficulty": "L4D2_SET_DIFFICULTY"}
         old = {v: os.environ.get(v) for v in keys.values()}
         for name, var in keys.items():
-            os.environ[var] = env.get(name, "")
+            if env.get(name) is None and name in ("password", "rcon"):
+                os.environ.pop(var, None)       # not passed: keep what server.cfg has
+            else:
+                os.environ[var] = env.get(name) or ""
         try:
             return self.run_quiet(cli.cmd_init_config, [])[1]
         finally:
@@ -319,6 +381,42 @@ class ConfigTests(CliCase):
         backups = [n for n in os.listdir(os.path.dirname(cli.CFG)) if ".bak." in n]
         self.assertEqual(len(backups), 1)
         self.assertIn('hostname "Old"', read(os.path.join(os.path.dirname(cli.CFG), backups[0])))
+
+    def test_set_cvar_replaces_any_spelling_of_the_line(self):
+        cases = [
+            ("hostname My Server\n", 'hostname "New"\n'),
+            ("hostname My Server   // mine\n", 'hostname "New"   // mine\n'),
+            ("HostName \"Old\"\r\nsv_lan 0\r\n", 'hostname "New"\r\nsv_lan 0\r\n'),
+            ("\thostname\t\"Old\" // x\n", '\thostname "New" // x\n'),
+            ("hostname\n", 'hostname "New"\n'),
+            # A command chained on the same line is kept, not swallowed.
+            ("hostname \"a\";sv_lan 0\n", 'hostname "New";sv_lan 0\n'),
+            ("hostname a ; sv_lan 0 // x\n", 'hostname "New" ; sv_lan 0 // x\n'),
+            ('hostname"Old"\n', 'hostname "New"\n'),
+        ]
+        for before, after in cases:
+            self.assertEqual(cli.set_cvar(before, "hostname", "New"), after, before)
+        # Other cvars and commented-out lines are not the same setting.
+        text = "hostname_extra 1\n// hostname Old\n"
+        self.assertEqual(cli.set_cvar(text, "hostname", "New"), text + 'hostname "New"\n')
+
+    def test_unpassed_passwords_are_left_alone(self):
+        original = ("hostname My Server\r\nsv_password hunter2 // friends\r\n"
+                    "rcon_password secret123\r\n")
+        write(cli.CFG, original)
+        self.init(hostname="New", difficulty="Hard")
+        text = read(cli.CFG)
+        self.assertIn("sv_password hunter2 // friends", text)
+        self.assertIn("rcon_password secret123", text)
+        self.assertNotIn('rcon_password ""', text)
+        self.assertEqual(text.lower().count("hostname"), 1)
+        self.assertIn('hostname "New"', text)
+        # Passing them (even empty) still changes them.
+        self.init(hostname="New", password="", rcon="")
+        text = read(cli.CFG)
+        self.assertIn('sv_password ""', text)
+        self.assertIn('rcon_password ""', text)
+        self.assertEqual(text.count("rcon_password"), 1)
 
     def test_backups_are_pruned(self):
         write(cli.CFG, 'hostname "x"\n')
@@ -454,6 +552,55 @@ class LockAndStatusTests(CliCase):
         self.assertIn("WITH PROBLEMS", out)
         self.assertIn("exit 8", out)
         self.assertEqual(self.systemctl_calls[-1], "start")  # the server is still brought back up
+
+    def run_main(self, argv, cwd_files=()):
+        """main() as if started by root in a folder holding cwd_files."""
+        here = os.path.join(self.root, "cwd")
+        os.makedirs(here, exist_ok=True)
+        for name in cwd_files:
+            write(os.path.join(here, name), "")
+        real_chdir, old_cwd = os.chdir, os.getcwd()
+        saved = (cli.sys.argv, cli.os.geteuid, cli.init_paths, cli.drop_privileges)
+        self.addCleanup(lambda: (setattr(cli.sys, "argv", saved[0]), setattr(cli.os, "geteuid", saved[1]),
+                                 setattr(cli, "init_paths", saved[2]), setattr(cli, "drop_privileges", saved[3]),
+                                 setattr(cli.os, "chdir", real_chdir), real_chdir(old_cwd)))
+        real_chdir(here)
+        cli.os.chdir = lambda path: None
+        cli.os.geteuid = lambda: 0
+        cli.init_paths = cli.drop_privileges = lambda: None
+        cli.sys.argv = ["l4d2"] + argv
+        return self.run_quiet(cli.main)
+
+    def test_files_in_the_current_folder_do_not_change_the_command(self):
+        seen = {}
+        for name in ("cmd_slots", "cmd_addmap", "cmd_init_config", "status_text"):
+            saved = getattr(cli, name)
+            self.addCleanup(lambda name=name, saved=saved: setattr(cli, name, saved))
+            setattr(cli, name, lambda args=None, name=name: seen.__setitem__(name, args) or "")
+        files = ("init-config", "slots", "addmap", "8", "status", "map.vpk")
+        self.run_main(["init-config"], files)
+        self.assertEqual(seen.pop("cmd_init_config"), [])
+        self.run_main(["slots", "8", "--no-restart"], files)
+        self.assertEqual(seen.pop("cmd_slots"), ["8", "--no-restart"])
+        code, _ = self.run_main(["status"], files)
+        self.assertIsNone(code)
+        self.assertIn("status_text", seen)
+        # addmap still takes files from the folder it was run in.
+        here = os.path.join(self.root, "cwd")
+        self.run_main(["addmap", "map.vpk", "123456", "--no-restart"], files)
+        self.assertEqual(seen.pop("cmd_addmap"), [os.path.join(here, "map.vpk"), "123456", "--no-restart"])
+
+    def test_unknown_command_fails(self):
+        code, out = self.run_quiet(cli.dispatch, "/tmp/init-config", [])
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown command", out)
+        self.assertNotIn("Usage:", out)
+        for word in ("help", "--help", "-h"):
+            code, out = self.run_quiet(cli.dispatch, word, [])
+            self.assertFalse(code)
+            self.assertIn("Usage:", out)
+        code, _ = self.run_main(["no-such-command"])
+        self.assertEqual(code, 2)
 
     def test_every_documented_command_is_dispatched(self):
         source = read(os.path.join(HERE, "..", "cli", "l4d2.py"))

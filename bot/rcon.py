@@ -7,8 +7,10 @@ Packet layout (all integers little-endian int32):
 `size` counts everything after itself, i.e. 4 (id) + 4 (type) + len(body) + 2.
 """
 
+import os
 import re
 import socket
+import stat
 import struct
 import time
 
@@ -211,14 +213,42 @@ def execute(cmd, password, host="127.0.0.1", port=27015, timeout=8.0):
     )
 
 
-_RCON_PW_RE = re.compile(r'^\s*rcon_password\s+"?([^"\r\n]*)"?', re.MULTILINE)
+_MAX_CFG_BYTES = 256 * 1024
+
+
+def parse_password(text):
+    """rcon_password as the game reads it from server.cfg text: quoted or not,
+    any case, a trailing // comment ignored, and the last line that sets it wins.
+    A line with no value (a bare "rcon_password") asks for it rather than sets it.
+    """
+    value = ""
+    for line in text.split("\n"):      # not splitlines(): the game only breaks lines at \n
+        line = line.strip()
+        if line[:13].lower() != "rcon_password":
+            continue
+        rest = line[13:]
+        if rest and rest[0] not in ' \t"' and not rest.startswith("//"):
+            continue          # some other cvar, e.g. rcon_password_x
+        rest = rest.lstrip()
+        if rest.startswith('"'):
+            value = rest[1:].split('"', 1)[0]
+        else:
+            unquoted = re.split(r"//|;", rest, maxsplit=1)[0].strip()   # ';' starts the next command
+            if unquoted:
+                value = unquoted
+    return value
 
 
 def read_password(cfg_path):
     """Pull rcon_password out of server.cfg. Returns '' when unset or unreadable."""
+    # The game user owns this file and the bot runs as root: a link or a FIFO
+    # planted in its place is refused instead of read or waited on.
     try:
-        with open(cfg_path, "r", errors="replace") as fh:
-            match = _RCON_PW_RE.search(fh.read())
+        fd = os.open(cfg_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return ""
+            text = fh.read(_MAX_CFG_BYTES).decode("utf-8", "replace")
     except OSError:
         return ""
-    return match.group(1).strip() if match else ""
+    return parse_password(text)
