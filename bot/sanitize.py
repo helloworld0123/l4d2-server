@@ -19,8 +19,27 @@ _INVISIBLE_RE = re.compile(r"[​-‏‪-‮⁦-⁩﻿]")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 # Commands that would break the bot's own access or the server's config.
-RCON_REFUSED = re.compile(r"^\s*(rcon_password|sv_rcon\w*)\b", re.IGNORECASE)
-RCON_CONFIRM = re.compile(r"^\s*(quit|exit|_restart|sv_password)\b", re.IGNORECASE)
+RCON_REFUSED = re.compile(r"(rcon_password|sv_rcon\w*)", re.IGNORECASE)
+RCON_CONFIRM = re.compile(r"(quit|exit|_restart|sv_password)", re.IGNORECASE)
+# SourceMod commands that run their arguments as another command or set a cvar.
+_WRAPPERS = ("sm_cvar", "sm_rcon")
+
+
+def _command_names(command):
+    """The command each ';' part of a console line really runs.
+
+    The game accepts a quoted name ("rcon_password" x) and SourceMod passes
+    one on (sm_cvar rcon_password x), so quotes and such wrappers are peeled
+    off before the name is looked at.
+    """
+    for part in (command or "").split(";"):
+        words = part.replace('"', " ").split()
+        while words and words[0].lower() in _WRAPPERS:
+            words = words[1:]
+        # The console also ends a name at ( ) { } ' and :, so rcon_password(x) is still that command.
+        name = re.match(r"\w+", words[0]) if words else None
+        if name:
+            yield name.group(0)
 
 
 def rcon_refused(command):
@@ -29,12 +48,12 @@ def rcon_refused(command):
     The console splits on ';', so checking only the start of the line would
     let `echo hi; rcon_password x` through.
     """
-    return any(RCON_REFUSED.match(part) for part in (command or "").split(";"))
+    return any(RCON_REFUSED.fullmatch(name) for name in _command_names(command))
 
 
 def rcon_needs_confirm(command):
     """Same split, for commands that disconnect players or lock them out."""
-    return any(RCON_CONFIRM.match(part) for part in (command or "").split(";"))
+    return any(RCON_CONFIRM.fullmatch(name) for name in _command_names(command))
 
 
 def console_arg(text, limit=200):

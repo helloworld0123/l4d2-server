@@ -117,6 +117,11 @@ survivor models on every map.
 Without it the server can crash right after a start, the first time a bot is
 given Bill, Zoey, Francis or Louis.
 
+It also makes rescue closets quicker: a dead survivor can be rescued straight
+away instead of after the game's usual wait (the `sm_cvar rescue_...` lines in
+the managed block at the end of `server.cfg`; `l4d2 slots <n>` rewrites that
+block, so change the values in `RESCUE_CVARS` in `cli/l4d2.py`, not by hand).
+
 With more than four players the server is also started with room for 31
 clients (`+sv_setmax 31`) instead of the engine's usual 18. Bots and special
 infected count as clients, and the survivor plugins warn in the log
@@ -126,6 +131,43 @@ Each of those downloads is pinned to one exact version and checked against a
 checksum stored in the `l4d2` command, so the server only ever installs the
 files this project was tested with. Moving to newer versions means updating the
 pins at the top of `cli/l4d2.py` and running `sudo bash l4d2-setup.sh --upgrade`.
+
+### Extra plugins
+
+The same install adds a set of plugins by other authors, pinned and checked
+the same way. They are on from the next restart; nothing needs setting up.
+
+| Plugin | What it does |
+|---|---|
+| Infected Bots Control (fbef0102) | Scales special infected, tanks and witches to the number of survivors, so 8 players don't steamroll a game balanced for 4. Its numbers are in `addons/sourcemod/data/l4dinfectedbots/` (`coop.cfg`, `realism.cfg`, one file per game mode, with a section per team size). As shipped, with 6 or more survivors it also lets a player or two join the infected team in co-op (`!ji`); set `coop_versus_enable` to `0` in those sections to stop that. |
+| AFK commands (fbef0102) | `!afk` steps away and leaves your survivor to a bot; `!join` takes one back. It also answers `!survivors`, so an admin setting the team size with `!survivors 8` may see its "already in survivor team" hint; the size is still set. |
+| Reverse Friendly-Fire (Mystik Spiral) | Whoever shoots a teammate takes the damage instead. **Off until an admin turns it on** with `!reverseff` or the [web panel](#web-panel) switch. It never kicks or bans anyone here. Settings: `cfg/sourcemod/l4d2_reverse_ff.cfg`. |
+| Skill Detect, Survivor MVP (Tabun) | Chat call-outs for skeets, clears and the like, and who did most at the end of each round (`!mvp`). |
+| Rock the Vote, Nominations, MapChooser (SourceMod's own) | Players type `rtv` in chat to vote for a change of campaign and `nominate` to put one on the ballot. The ballot is the official campaigns plus the custom ones you installed (`addons/sourcemod/configs/l4d2_campaigns.txt`, rewritten when maps are added or removed). |
+| Left 4 Bots 2 (smilz0) | More capable survivor bots, in every game and not only on an empty server. A script addon rather than a SourceMod plugin: `left4bots2.vpk` and the `left4lib.vpk` it needs, in the addons folder. Delete both files to go back to the game's own bots. |
+| Cleaner (Accelerator74) | Keeps known harmless spam out of the console log. The lines it hides are in `addons/sourcemod/configs/cleaner.cfg`. |
+
+When a co-op finale is won, the server also moves on to the next official
+campaign after 15 seconds instead of emptying
+(`l4d2_extras_nextcampaign 0` in `server.cfg` turns that off).
+
+Settings files you edit are left alone by updates. To drop one of these
+plugins, move its `.smx` from `addons/sourcemod/plugins/` to
+`plugins/disabled/`; an update puts it back, so remove its entry in
+`cli/l4d2.py` to make that stick.
+
+To get them on a server that already has the mods, run
+`sudo bash l4d2-setup.sh --upgrade`, then `l4d2 slots <your number>` again.
+
+**Bots playing on an empty server.** The game pauses when the last person
+leaves. To keep bots playing, add these two lines to `server.cfg`
+(`l4d2 config`); they are not set for you, because the server then uses CPU
+around the clock:
+
+```
+sb_all_bot_game 1
+sv_hibernate_when_empty 0
+```
 
 ### In-game admins
 
@@ -150,6 +192,15 @@ Admins also get these chat commands (each works in the game console too, as
 | `!restartmap` | Restarts the current chapter. |
 | `!tank`, `!witch`, `!horde` | Spawns one now. |
 | `!tankrun [on\|off]` | Tank run: tanks keep coming until the map ends. `l4d2_extras_tankrun_interval` (25 s) and `l4d2_extras_tankrun_max` (2 at once) tune it. The [web panel](#web-panel) has a switch for it too. |
+| `!survivors <number>` | Survivor team size, from 4 up to your player slots. Bots fill the seats nobody plays, so `!survivors 8` with one player gives 7 bots. Extra bots take a survivor the team doesn't have yet (Bill, Zoey, Francis, Louis), so they can be told apart. Lasts until the server restarts. The [web panel](#web-panel) has a picker for it too. |
+| `!reverseff [on\|off]` | Reverse friendly fire: whoever shoots a teammate takes the damage instead. Lasts until the server restarts (see [Extra plugins](#extra-plugins)). The [web panel](#web-panel) has a switch for it too. |
+| `!give <item> [who]` | Gives a weapon or item: `rifle_ak47`, `autoshotgun`, `sniper_military`, `katana`, `molotov`, `pipe_bomb`, `defibrillator`, `adrenaline` and so on. `!give` alone lists the common ones. |
+| `!kit [who]`, `!heal [who]`, `!ammo [who]` | A first aid kit, full health, or full ammo. |
+| `!laser [who]` | A laser sight on the weapon in hand. `!give incendiary_ammo` and `!give explosive_ammo` load a special clip the same way. |
+| `!respawn [who]` | Brings a dead survivor back next to a living one. |
+
+`[who]` is a name (part of one is enough), `#userid`, `@me`, `@all`, `@bots` or
+`@humans`. Left out, it means you. None of these need `sv_cheats`.
 
 They come from a small plugin of this project, `l4d2_admin_extras`. To get it
 on a server that already has the mods, run `sudo bash l4d2-setup.sh --upgrade`
@@ -234,11 +285,13 @@ An optional web page for running the server from a browser, phone included.
 - **Overview.** Whether the server is up, the current map, who's playing (with
   ping and time connected), a Kick button per player, a box to message everyone
   in the game, the connect details to send friends, and CPU, memory and disk.
-- **Maps.** Switch campaign with one click, install Workshop maps by link,
+- **Maps.** Play any campaign from any chapter, restart the current chapter,
+  install Workshop maps by link,
   remove them, check for updates, copy the links friends need.
 - **Settings.** Server name, join password, difficulty, game mode, starting map,
-  co-op player slots, cheats, tank run, plus an editor for `server.cfg` itself.
-- **Console.** Run console commands and follow the server log.
+  co-op player slots, plus an editor for `server.cfg` itself.
+- **Console.** Run console commands (common ones are one click), and search or
+  follow the server log, with problems highlighted.
 
 Name, password and difficulty are saved to `server.cfg` and applied to the
 running game straight away. Game mode and player slots take effect on the next
@@ -248,12 +301,50 @@ The game mode list has co-op, realism and versus, plus the same mutations as
 the in-game `!mode` menu (Hard Eight, Headshot!, Bleed Out, Ironman, Hunting
 Party, Special Delivery, Death's Door).
 
-The **Tank run** switch does what `!tankrun` does in game: tanks keep coming
+The **Tank run** switch (Overview tab, under This session) does what `!tankrun` does in game: tanks keep coming
 until the map ends. It needs the admin extras plugin from
 [In-game admins](#in-game-admins), so it is greyed out on a server that never
 had more than four player slots. On a server set up before this switch existed,
 run `sudo bash l4d2-setup.sh --upgrade`, then `l4d2 slots <your number>` again,
 and restart.
+
+The **Players** card on the Overview tab lists everyone in the game: the
+survivor team, bots included, with their health, and each person's ping, time
+connected and Steam ID. Each one has Heal, Kit, Ammo and
+Give… buttons, with the one that survivor needs most standing out (Give… opens a searchable list of weapons and items), a dead
+survivor has Respawn, and the buttons in the card's header do the same for the
+whole team. These are the in-game `!heal`, `!kit`, `!ammo`, `!give` and
+`!respawn`, so they need the same plugin. On a phone each row is one line:
+tap ⋯ for the rest.
+
+**Presets** (top of This session) set the session switches in one click:
+*Normal* turns every switch off, *Loot party* is double loot and infinite ammo,
+*Chaos night* adds a tank run. The survivor team size is left as it is, and
+anything the server can't do is skipped and named. What is on is also shown
+under the tiles; click one to turn it off.
+
+**Recent activity** lists joins, leaves, map changes, background jobs and what
+was done from the panel (never passwords or console arguments). It is kept in
+memory only, so it starts empty when the panel restarts, and joins and leaves
+are only noticed while the panel is open in a browser somewhere.
+
+The **Double loot** switch doubles how many pills, adrenaline shots,
+defibrillators, throwables, ammo piles, upgrade packs, melee and special
+weapons the game scatters over a map. Items are placed when a map loads, so it
+shows from the next map, and it lasts until the server restarts. First aid
+kits are fixed by each map and don't change. It needs SourceMod.
+
+The **Infinite ammo** switch makes the weapon in hand bottomless: no
+reloading, no running out, throwables included. It applies at once, lasts
+until the server restarts, and needs SourceMod.
+
+The **Reverse friendly fire** switch does what `!reverseff` does: whoever
+shoots a teammate takes the damage instead. It lasts until the server
+restarts and is greyed out without the [extra plugins](#extra-plugins).
+
+The **Survivor team** picker under it does what `!survivors` does: pick a
+team of 4 up to your player slots and bots fill the seats nobody plays. It
+needs the same plugin and more than four player slots.
 
 ### Setting it up
 

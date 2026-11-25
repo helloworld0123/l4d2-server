@@ -5,6 +5,7 @@ are faked; auth, routing, config rewriting and the RCON client are the real ones
 """
 
 import errno
+import fcntl
 import http.client
 import socket
 import json
@@ -37,7 +38,18 @@ players : 1 humans, 1 bots (8 max) (not hibernating) (unreserved)
 '''
 CVAR_REPLY = '"z_difficulty" = "Hard"\n"sv_cheats" = "0"\n"mp_gamemode" = "coop"\n'
 # What the fake game answers for its live settings; tests swap parts of it.
-GAME = {"cvars": CVAR_REPLY, "tank_run": None}   # tank_run None: no admin extras plugin
+# tank_run None: no admin extras plugin. team None: no way to resize the survivor
+# team; otherwise [size asked for (0: never asked), most the server allows].
+# loot: the pain pill density; "mods" False: no SourceMod, so no sm_cvar.
+# roster None: an admin extras plugin without sm_roster; otherwise what it prints.
+# reverse_ff None: no Reverse Friendly-Fire plugin. old_extras: an admin extras
+# plugin from before it had sm_reverseff.
+GAME = {"cvars": CVAR_REPLY, "tank_run": None, "team": None, "loot": "6.48", "ammo": "0", "mods": True, "roster": None,
+        "reverse_ff": None, "old_extras": False, "status": STATUS_REPLY}
+ROSTER_REPLY = ('roster 2 0 alive 73 12 Player One\n'
+                'roster 3 1 down 300 0 Coach\n'
+                'roster 4 1 dead 0 0 (1)Rochelle\n'
+                'roster 9 0 alive 100 0 roster 1 1 dead 0 0 <b>Fake\n')
 
 SENT = []
 
@@ -48,7 +60,26 @@ def cvar_reply(text):
     tank = ('Unknown command "l4d2_extras_tankrun"\n' if state is None else
             f'"l4d2_extras_tankrun" = "{int(state)}" ( def. "0" ) min. 0.000000 max. 1.000000\n'
             " - Tank run on this map: 1 = on, 0 = off.\n")
-    return (GAME["cvars"] if text.startswith("z_difficulty;") else "") + tank
+    if GAME["team"] is None:
+        team = 'Unknown command "l4d2_extras_survivors"\nUnknown command "l4d_multislots_max_survivors"\n'
+    else:
+        team = (f'"l4d2_extras_survivors" = "{GAME["team"][0]}" ( def. "0" ) min. 0.000000 max. 31.000000\n'
+                f'"l4d_multislots_max_survivors" = "{GAME["team"][1]}" ( def. "10" ) min. 4.000000 max. 31.000000\n')
+    loot = f'"director_pain_pill_density" = "{GAME["loot"]}"\n game cheat\n - Items per 100 yards square\n'
+    if text.startswith("l4d2_extras_survivors;"):
+        return team
+    ammo = f'"sv_infinite_ammo" = "{GAME["ammo"]}"\n game cheat replicated\n'
+    if text == "sv_cheats":
+        return re.search(r'"sv_cheats" = "\d"', GAME["cvars"]).group(0) + "\n"
+    if text == "director_pain_pill_density":
+        return loot
+    if text == "sv_infinite_ammo":
+        return ammo
+    reverse = ('Unknown command "reverseff_enabled"\n' if GAME["reverse_ff"] is None else
+               f'"reverseff_enabled" = "{int(GAME["reverse_ff"])}" ( def. "1" )\n notify\n - 0=Plugin off, 1=Plugin on.\n')
+    if text == "reverseff_enabled":
+        return reverse
+    return (GAME["cvars"] + tank + team + loot + ammo + reverse) if text.startswith("z_difficulty;") else tank
 
 
 def read(path):
@@ -71,10 +102,29 @@ class GameServer(socketserver.BaseRequestHandler):
                 self.request.sendall(rcon.encode_packet(pid, rcon.SERVERDATA_AUTH_RESPONSE, ""))
                 continue
             SENT.append(text)
+            if text in ("sv_cheats 0", "sv_cheats 1"):
+                GAME["cvars"] = re.sub(r'"sv_cheats" = "\d"', f'"sv_cheats" = "{text[-1]}"', GAME["cvars"])
+                if text.endswith("0"):      # the game puts cheat-guarded settings back
+                    GAME.update(loot="6.48", ammo="0")
             if text.startswith("sm_tankrun ") and GAME["tank_run"] is not None:
                 GAME["tank_run"] = text.endswith(" on")
-            reply = (STATUS_REPLY if text == "status"
-                     else cvar_reply(text) if text.startswith("z_difficulty;") or text == "l4d2_extras_tankrun"
+            if text.startswith("sm_survivors ") and GAME["team"] is not None:
+                GAME["team"][0] = int(text.split()[1])
+            if text.startswith("sm_reverseff ") and GAME["reverse_ff"] is not None and not GAME["old_extras"]:
+                GAME["reverse_ff"] = text.endswith(" on")
+            if text.startswith("sm_cvar sv_infinite_ammo ") and GAME["mods"]:
+                GAME["ammo"] = text.split()[2]
+            if text.startswith("sm_cvar director_") and GAME["mods"]:
+                GAME["loot"] = text.split(";")[0].split()[2]
+            reply = (GAME["status"] if text == "status"
+                     else (GAME["roster"] or 'Unknown command "sm_roster"\n') if text == "sm_roster"
+                     else "[SM] No matching client was found.\n" if text == "sm_heal #77"
+                     else 'Unknown command "sm_ammo"\n' if text.startswith("sm_ammo ") and GAME["roster"] is None
+                     else "" if text.startswith(("sm_kit ", "sm_heal ", "sm_ammo ", "sm_respawn ", "sm_give "))
+                     else 'Unknown command "sm_cvar"\n' if text.startswith("sm_cvar ") and not GAME["mods"]
+                     else 'Unknown command "sm_reverseff"\n' if text.startswith("sm_reverseff ") and GAME["old_extras"]
+                     else cvar_reply(text) if text == "sv_cheats" or text.startswith(("z_difficulty;", "l4d2_extras_", "director_", "sv_infinite_",
+                                                                     "reverseff_"))
                      else f"ack: {text}")
             self.request.sendall(rcon.encode_packet(pid, 0, reply))
 
@@ -318,7 +368,8 @@ class PanelHttpTests(unittest.TestCase):
 
     def setUp(self):
         SENT.clear()
-        GAME.update(cvars=CVAR_REPLY, tank_run=None)
+        GAME.update(cvars=CVAR_REPLY, tank_run=None, team=None, loot="6.48", ammo="0", mods=True, roster=None,
+                    reverse_ff=None, old_extras=False, status=STATUS_REPLY)
         rcon._auth_blocked_until = 0.0
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -746,6 +797,317 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertEqual(read(self.cfg_path), before)     # refused before anything was written
 
+    def test_survivor_roster(self):
+        self.login()
+        # No roster command (an older plugin): the panel says so instead of showing nobody.
+        self.assertIsNone(self.request("GET", "/api/overview")[1]["survivors"])
+
+        GAME["roster"] = ROSTER_REPLY
+        self.httpd.app.panel.invalidate()
+        survivors = self.request("GET", "/api/overview")[1]["survivors"]
+        self.assertEqual(survivors[0], {"userid": "2", "bot": False, "state": "alive", "health": 73,
+                                        "temp": 12, "name": "Player One"})
+        self.assertEqual([(s["name"], s["bot"], s["state"]) for s in survivors[1:3]],
+                         [("Coach", True, "down"), ("(1)Rochelle", True, "dead")])
+        # A name can't smuggle in a second survivor: it is one line, one survivor.
+        self.assertEqual((len(survivors), survivors[3]["name"]), (4, "roster 1 1 dead 0 0 <b>Fake"))
+
+    def test_survivor_actions(self):
+        self.login()
+        GAME["roster"] = ROSTER_REPLY
+        for body, sent in (
+            ({"action": "heal", "target": "2"}, "sm_heal #2"),
+            ({"action": "kit", "target": "all"}, "sm_kit @all"),
+            ({"action": "ammo", "target": "3"}, "sm_ammo #3"),
+            ({"action": "respawn", "target": "4"}, "sm_respawn #4"),
+            ({"action": "give", "target": "2", "item": "rifle_ak47"}, "sm_give rifle_ak47 #2"),
+            ({"action": "give", "target": "all", "item": "molotov"}, "sm_give molotov @all"),
+        ):
+            response, data = self.request("POST", "/api/survivor", body)
+            self.assertEqual(response.status, 200, (body, data))
+            self.assertEqual(SENT[-1], sent)
+
+        # The game's own refusal is passed on.
+        response, data = self.request("POST", "/api/survivor", {"action": "heal", "target": "77"})
+        self.assertEqual((response.status, data["error"]), (409, "No matching client was found."))
+
+    def test_survivor_actions_refuse_anything_odd(self):
+        self.login()
+        for body in ({}, {"action": "heal"}, {"action": "slay", "target": "2"}, {"action": "heal", "target": 2},
+                     {"action": "heal", "target": "2; quit"}, {"action": "heal", "target": "@all"},
+                     {"action": "heal", "target": "Coach"}, {"action": "give", "target": "2"},
+                     {"action": "give", "target": "2", "item": "ak47; quit"},
+                     {"action": "give", "target": "2", "item": "Rifle AK"}, {"action": "give", "target": "2", "item": 5}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/survivor", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+
+    def test_survivor_actions_without_the_new_plugin(self):
+        self.login()
+        response, data = self.request("POST", "/api/survivor", {"action": "ammo", "target": "all"})
+        self.assertEqual(response.status, 409)
+        self.assertIn("newest admin extras plugin", data["error"])
+
+    def test_double_loot_switch(self):
+        self.login()
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["double_loot"], False)
+
+        response, data = self.request("POST", "/api/loot", {"on": True})
+        self.assertEqual(response.status, 200, data)
+        self.assertIn("Double loot on", data["message"])
+        sent = SENT[-2].split("; ")
+        self.assertEqual(len(sent), len(panel_mod.LOOT_CVARS))
+        self.assertIn("sm_cvar director_pain_pill_density 12.96", sent)
+        self.assertIn("sm_cvar director_ammo_density 12.96", sent)
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["double_loot"], True)
+
+        self.assertEqual(self.request("POST", "/api/loot", {"on": False})[0].status, 200)
+        self.assertIn("sm_cvar director_molotov_density 6.48", SENT[-2])
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["double_loot"], False)
+
+    def test_reverse_friendly_fire_switch(self):
+        self.login()
+        # No plugin: the overview says so (the switch is greyed out) and nothing is switched.
+        self.assertIsNone(self.request("GET", "/api/overview")[1]["game"]["reverse_ff"])
+        SENT.clear()
+        response, data = self.request("POST", "/api/reverseff", {"on": True})
+        self.assertEqual(response.status, 409)
+        self.assertIn("isn't installed", data["error"])
+        self.assertEqual(SENT, ["reverseff_enabled"])
+
+        GAME["reverse_ff"] = False
+        self.httpd.app.panel.invalidate()
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["reverse_ff"], False)
+        response, data = self.request("POST", "/api/reverseff", {"on": True})
+        self.assertEqual(response.status, 200, data)
+        self.assertIn("Reverse friendly fire on", data["message"])
+        # Through the admin extras plugin, which keeps the choice across map changes.
+        self.assertEqual(SENT[-2:], ["reverseff_enabled", "sm_reverseff on"])
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["reverse_ff"], True)
+        self.assertEqual(self.request("POST", "/api/reverseff", {"on": False})[0].status, 200)
+        self.assertEqual(SENT[-1], "sm_reverseff off")
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["reverse_ff"], False)
+
+        for body in ({}, {"on": "on; quit"}, {"on": 1}, {"on": None}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/reverseff", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+
+    def test_reverse_friendly_fire_with_an_older_admin_extras_plugin(self):
+        self.login()
+        GAME.update(reverse_ff=False, old_extras=True)
+        response, data = self.request("POST", "/api/reverseff", {"on": True})
+        self.assertEqual(response.status, 409)
+        self.assertIn("newest admin extras plugin", data["error"])
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["reverse_ff"], False)
+
+    def test_infinite_ammo_switch(self):
+        self.login()
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["infinite_ammo"], False)
+        response, data = self.request("POST", "/api/ammo", {"on": True})
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(SENT[-2:], ["sm_cvar sv_infinite_ammo 1", "sv_infinite_ammo"])
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["infinite_ammo"], True)
+        self.assertEqual(self.request("POST", "/api/ammo", {"on": False})[0].status, 200)
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["infinite_ammo"], False)
+
+        for body in ({}, {"on": "1; quit"}, {"on": 1}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/ammo", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+
+        GAME["mods"] = False
+        response, data = self.request("POST", "/api/ammo", {"on": True})
+        self.assertEqual((response.status, "needs SourceMod" in data["error"]), (409, True))
+
+    def test_double_loot_without_sourcemod(self):
+        self.login()
+        GAME["mods"] = False
+        response, data = self.request("POST", "/api/loot", {"on": True})
+        self.assertEqual(response.status, 409)
+        self.assertIn("needs SourceMod", data["error"])
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["double_loot"], False)
+
+    def test_double_loot_needs_a_plain_on_or_off(self):
+        self.login()
+        for body in ({}, {"on": "on; quit"}, {"on": 1}, {"on": None}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/loot", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+
+    def test_a_config_edit_of_an_older_file_is_refused(self):
+        self.login()
+        _, opened = self.request("GET", "/api/config")
+        self.assertEqual(self.request("POST", "/api/settings", {"password": "changed"})[0].status, 200)
+        before = read(self.cfg_path)
+        response, data = self.request("POST", "/api/config", {"text": opened["text"] + "sv_lan 0\n", "base": opened["version"]})
+        self.assertEqual(response.status, 409)
+        self.assertIn("changed since you opened it", data["error"])
+        self.assertEqual(read(self.cfg_path), before)
+        _, opened = self.request("GET", "/api/config")
+        response, data = self.request("POST", "/api/config", {"text": opened["text"] + "sv_lan 0\n", "base": opened["version"]})
+        self.assertEqual(response.status, 200, data)
+        # What it answers is the version of what is there now, so the next save goes through.
+        self.assertEqual(data["version"], self.request("GET", "/api/config")[1]["version"])
+
+    def test_chapters(self):
+        self.login()
+        _, maps = self.request("GET", "/api/maps")
+        chapters = {m["map"]: m["maps"] for m in maps["official"]}
+        self.assertEqual(chapters["c6m1_riverbank"], ["c6m1_riverbank", "c6m2_bedlam", "c6m3_port"])
+        for first, names in chapters.items():
+            self.assertEqual(names[0], first)
+            for name in names:          # each one belongs to its campaign and can be switched to
+                self.assertEqual(self.httpd.app.panel._campaign(name)[0], first)
+                self.assertTrue(sanitize.valid_map(name))
+        self.assertEqual(maps["custom"][0]["maps"], ["deadcity_m1", "deadcity_m2"])
+        # maps.json belongs to the game user: only usable names reach the page.
+        with open(os.path.join(self.tmp.name, "maps.json"), "w") as fh:
+            json.dump({"1": {"campaign": "A", "maps": ["ok_m1", 7, "x; quit", None]}, "2": {"campaign": "B", "maps": "abc"}}, fh)
+        self.assertEqual([m["maps"] for m in self.request("GET", "/api/maps")[1]["custom"]], [["ok_m1"], []])
+
+    def test_presets(self):
+        self.login()
+        GAME.update(tank_run=False, reverse_ff=True)
+        presets = self.request("GET", "/api/overview")[1]["presets"]
+        self.assertEqual([p["id"] for p in presets], ["normal", "loot", "chaos"])
+
+        response, data = self.request("POST", "/api/preset", {"name": "chaos"})
+        self.assertEqual((response.status, data["failed"]), (200, []), data)
+        game = self.request("GET", "/api/overview")[1]["game"]
+        self.assertEqual([game[k] for k in ("tank_run", "double_loot", "infinite_ammo", "reverse_ff", "cheats")],
+                         [True, True, True, False, False])
+
+        # What is already right is left alone, so nobody sees it announced again.
+        SENT.clear()
+        self.request("POST", "/api/preset", {"name": "chaos"})
+        self.assertFalse([c for c in SENT if c.startswith("sm_") and c != "sm_roster"])
+
+        self.request("POST", "/api/preset", {"name": "normal"})
+        game = self.request("GET", "/api/overview")[1]["game"]
+        self.assertFalse(any(game[k] for k in ("tank_run", "double_loot", "infinite_ammo", "reverse_ff", "cheats")))
+
+    def test_a_preset_turns_cheats_off_before_it_sets_the_rest(self):
+        self.login()
+        GAME["cvars"] = CVAR_REPLY.replace('"sv_cheats" = "0"', '"sv_cheats" = "1"')
+        response, data = self.request("POST", "/api/preset", {"name": "loot"})
+        self.assertEqual((response.status, data["failed"]), (200, []), data)
+        game = self.request("GET", "/api/overview")[1]["game"]
+        self.assertEqual([game[k] for k in ("cheats", "double_loot", "infinite_ammo")], [False, True, True])
+
+    def test_a_preset_says_what_the_server_cannot_do(self):
+        self.login()            # no admin extras plugin: no tank run
+        response, data = self.request("POST", "/api/preset", {"name": "chaos"})
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual(data["failed"], ["tank run (not available on this server)"])
+        self.assertIs(self.request("GET", "/api/overview")[1]["game"]["double_loot"], True)
+        # Something to switch off that isn't there at all is no problem.
+        self.assertEqual(self.request("POST", "/api/preset", {"name": "normal"})[1]["failed"], [])
+
+    def test_presets_refuse_anything_odd(self):
+        self.login()
+        for body in ({}, {"name": "x; quit"}, {"name": 1}, {"name": ["chaos"]}, {"name": None}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/preset", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+        self.httpd.app.cfg._rcon_port = 1
+        self.assertEqual(self.request("POST", "/api/preset", {"name": "normal"})[0].status, 502)
+
+    def activity(self):
+        self.httpd.app.panel.invalidate()
+        return [(e["kind"], e["text"], e["count"]) for e in self.request("GET", "/api/overview")[1]["activity"]]
+
+    def test_activity_lists_what_the_panel_did(self):
+        self.login()
+        self.assertEqual(self.activity(), [])       # who was there at the first look didn't just join
+        GAME["roster"] = ROSTER_REPLY
+        self.activity()
+        for _ in range(2):
+            self.request("POST", "/api/survivor", {"action": "give", "target": "3", "item": "pain_pills"})
+        self.request("POST", "/api/kick", {"userid": "2"})
+        self.request("POST", "/api/kick", {"userid": "nope"})          # refused: not listed
+        self.request("POST", "/api/rcon", {"command": 'sv_password"hunter2"'})
+        self.request("POST", "/api/settings", {"password": "hunter3"})
+        listed = self.activity()
+        self.assertEqual(listed, [("admin", "Settings saved: password", 1), ("admin", "Console command: sv_password", 1),
+                                  ("admin", "Kicked Player One", 1), ("admin", "Gave pain pills to Coach", 2)])
+        self.assertNotIn("hunter", json.dumps(listed))
+
+    def test_activity_lists_jobs(self):
+        self.login()
+        self.request("POST", "/api/maps/update", {})
+        self.wait_for_job()
+        for _ in range(40):
+            if len(self.activity()) == 2:
+                break
+            time.sleep(0.05)
+        self.assertEqual([text for _, text, _ in self.activity()], ["Update Workshop maps: done", "Update Workshop maps: started"])
+
+    def test_activity_lists_joins_leaves_and_map_changes(self):
+        self.login()
+        self.activity()
+        joined = STATUS_REPLY + '#  7 3 "Late <b>" STEAM_1:1:99 00:05 48 0 active 30000 10.0.0.6:27005\n'
+        joined += '#  8 4 "Loading" STEAM_ID_PENDING 00:01 48 0 spawning 30000 10.0.0.7:27005\n'
+        GAME["status"] = joined
+        self.assertEqual(self.activity(), [("join", "Late <b> joined", 1)])
+        GAME["status"] = joined.replace("c5m1_waterfront", "c5m2_park")
+        self.assertEqual(self.activity()[0], ("map", "Map changed to The Parish · c5m2_park", 1))
+        # One empty look is a map loading; two in a row is someone gone.
+        GAME["status"] = STATUS_REPLY.replace("c5m1_waterfront", "c5m2_park")
+        self.assertEqual(len(self.activity()), 2)
+        self.assertEqual(self.activity()[0], ("leave", "Late <b> left", 1))
+        # The game being unreachable for a while, with a panel open, is not such a gap.
+        panel = self.httpd.app.panel
+        panel._seen_at -= 600
+        panel.cfg._rcon_port, port = 1, panel.cfg._rcon_port
+        self.activity()
+        panel.cfg._rcon_port = port
+        self.assertNotIn("no panel", str(self.activity()))
+        # After a long gap the time they left isn't known, and it says so.
+        GAME["status"] = "\n".join(STATUS_REPLY.replace("c5m1_waterfront", "c5m2_park").splitlines()[:4]) + "\n"
+        self.httpd.app.panel._looked_at -= 600
+        self.assertEqual(self.activity()[0][1], "Enrico <img src=x> left while no panel was open")
+
+    def test_survivor_team_size(self):
+        self.login()
+        GAME["team"] = [0, 8]
+        # Never asked for: the panel shows the normal team of 4.
+        self.assertEqual(self.request("GET", "/api/overview")[1]["game"]["team"], {"size": 4, "max": 8})
+
+        response, data = self.request("POST", "/api/survivors", {"size": 8})
+        self.assertEqual(response.status, 200, data)
+        self.assertIn("set to 8", data["message"])
+        self.assertEqual(SENT[-2:], ["l4d2_extras_survivors; l4d_multislots_max_survivors", "sm_survivors 8"])
+        self.assertEqual(self.request("GET", "/api/overview")[1]["game"]["team"], {"size": 8, "max": 8})
+
+        response, data = self.request("POST", "/api/survivors", {"size": 4})
+        self.assertEqual((response.status, SENT[-1]), (200, "sm_survivors 4"))
+        self.assertIn("normal 4", data["message"])
+
+        # More survivors than the server has player slots for: refused, nothing sent.
+        SENT.clear()
+        response, data = self.request("POST", "/api/survivors", {"size": 9})
+        self.assertEqual(response.status, 409)
+        self.assertIn("8 players", data["error"])
+        self.assertEqual(SENT, ["l4d2_extras_survivors; l4d_multislots_max_survivors"])
+
+    def test_survivor_team_without_the_mods(self):
+        self.login()
+        self.assertIsNone(self.request("GET", "/api/overview")[1]["game"]["team"])
+        SENT.clear()
+        response, data = self.request("POST", "/api/survivors", {"size": 6})
+        self.assertEqual(response.status, 409)
+        self.assertIn("can't be resized", data["error"])
+        self.assertEqual(SENT, ["l4d2_extras_survivors; l4d_multislots_max_survivors"])
+
+    def test_survivor_team_needs_a_plain_number(self):
+        self.login()
+        GAME["team"] = [0, 8]
+        for body in ({}, {"size": "8; quit"}, {"size": True}, {"size": 3}, {"size": 13}, {"size": 6.5}, {"size": None}):
+            SENT.clear()
+            self.assertEqual(self.request("POST", "/api/survivors", body)[0].status, 400, body)
+            self.assertEqual(SENT, [])
+
     def test_tank_run_needs_a_plain_on_or_off(self):
         self.login()
         GAME["tank_run"] = False
@@ -959,6 +1321,132 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("sv_lan 0", read(self.cfg_path))
         self.assertIn("password pw2", read(os.path.join(home, "SERVER-INFO.txt")))
         self.assertTrue([n for n in os.listdir(self.cfg_dir) if ".bak." in n])
+
+
+    # ------------------------------------------------- fixes from the code review
+    def test_odd_values_in_maps_json_do_not_break_the_maps_tab(self):
+        self.login()
+        with open(os.path.join(self.tmp.name, "maps.json"), "w") as fh:
+            json.dump({"a": {"campaign": 5, "title": ["x"], "file": 7, "first_map": 3, "maps": "no"},
+                       "b": {"campaign": "Fine", "file": "b.vpk", "first_map": "fine_m1", "maps": ["fine_m1"]}}, fh)
+        response, data = self.request("GET", "/api/maps")
+        self.assertEqual(response.status, 200, data)
+        self.assertEqual([(c["key"], c["name"], c["first_map"]) for c in data["custom"]],
+                         [("a", "a", None), ("b", "Fine", "fine_m1")])
+        self.assertEqual(self.request("POST", "/api/maps/remove", {"key": "a"})[0].status, 200)
+
+    def test_change_map_says_when_the_game_cannot_find_the_map(self):
+        self.login()
+        self.httpd.app.panel.rcon = lambda command: "changelevel failed: deadcity_m1 not found\n"
+        response, data = self.request("POST", "/api/map", {"name": "deadcity_m1"})
+        self.assertEqual(response.status, 409)
+        self.assertIn("after a server restart", data["error"])
+
+    def test_cheats_switch_works_while_a_job_holds_the_lock(self):
+        self.login()
+        with open(os.path.join(self.tmp.name, "l4d2.lock"), "a+") as other:
+            fcntl.flock(other, fcntl.LOCK_EX)
+            response, data = self.request("POST", "/api/settings", {"cheats": True})
+            self.assertEqual(response.status, 200, data)
+            self.assertEqual(data["changed"], ["cheats"])
+            self.assertEqual(SENT[-1], "sv_cheats 1")
+            # Anything that rewrites a file still waits.
+            self.assertEqual(self.request("POST", "/api/settings", {"cheats": False, "hostname": "X"})[0].status, 409)
+            self.assertEqual(self.request("POST", "/api/settings", {"cheats": "false"})[0].status, 400)
+            self.assertEqual(SENT[-1], "sv_cheats 1")
+
+    def test_only_a_restart_lifts_the_rcon_cooldown(self):
+        self.login()
+        self.addCleanup(rcon.forget_rejection)
+        for action, lifted in (("updatemaps", False), ("restart", True)):
+            rcon._auth_rejected, rcon._auth_blocked_until = "wrong", time.time() + 600
+            path, body = ("/api/maps/update", {}) if action == "updatemaps" else ("/api/control", {"action": action})
+            self.assertEqual(self.request("POST", path, body)[0].status, 200)
+            self.wait_for_job()
+            self.assertEqual(rcon._auth_rejected is None, lifted, action)
+
+    def test_saving_a_new_rcon_password_without_applying_it_warns(self):
+        self.login()
+        text = read(self.cfg_path).replace('"secret"', '"other"')
+        _, data = self.request("POST", "/api/config", {"text": text, "apply": False})
+        self.assertTrue(any("rcon_password changed" in w for w in data["warnings"]), data)
+        _, data = self.request("POST", "/api/config", {"text": text + "// note\n", "apply": False})
+        self.assertEqual(data["warnings"], [])        # same password as the file now has
+
+    def test_rcon_password_is_read_the_way_the_game_reads_it(self):
+        for line, want in (("rcon_password a/b", "a/b"), ("rcon_password abc; sv_cheats 1", "abc"),
+                           ('rcon_password "q" // note', "q")):
+            with open(self.cfg_path, "w") as fh:
+                fh.write(line + "\n")
+            self.assertEqual(self.httpd.app.cfg.rcon_password(), want)
+
+
+class ReviewFixTests(unittest.TestCase):
+    def test_rcon_guard_sees_quoted_names_and_sourcemod_wrappers(self):
+        for line in ('"rcon_password" x', "sm_cvar rcon_password x", 'sm_cvar "sv_rcon_banpenalty" 0',
+                     "status; sm_rcon rcon_password x", "RCON_PASSWORD x"):
+            self.assertTrue(sanitize.rcon_refused(line), line)
+        for line in ("sm_cvar sv_cheats 1", "say rcon_password", "status", "", "sm_cvar"):
+            self.assertFalse(sanitize.rcon_refused(line), line)
+        for line in ("rcon_password(x)", "rcon_password'x'", "rcon_password{x}", "sv_rcon_maxfailures:1"):
+            self.assertTrue(sanitize.rcon_refused(line), line)
+        self.assertTrue(sanitize.rcon_needs_confirm('"quit"'))
+        self.assertTrue(sanitize.rcon_needs_confirm("sm_cvar sv_password x"))
+        self.assertFalse(sanitize.rcon_needs_confirm("say quit"))
+
+    def test_backup_pruning_leaves_hand_made_backups_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "server.cfg")
+            for name in ("server.cfg", "server.cfg.bak.before-mods", "server.cfg.bak.old",
+                         "server.cfg.bak.2024.01.15", "server.cfg.bak.\u00b2"):
+                with open(os.path.join(tmp, name), "w") as fh:
+                    fh.write("a\n")
+            for stamp in range(100, 100 + serverconf.KEEP_BACKUPS + 3):
+                with open(f"{path}.bak.{stamp}", "w") as fh:
+                    fh.write("old\n")
+            serverconf.backup(path)
+            names = os.listdir(tmp)
+            self.assertIn("server.cfg.bak.before-mods", names)
+            self.assertIn("server.cfg.bak.old", names)
+            self.assertIn("server.cfg.bak.2024.01.15", names)
+            self.assertIn("server.cfg.bak.\u00b2", names)
+            self.assertEqual(len([n for n in names if re.fullmatch(r"server\.cfg\.bak\.[0-9]+", n)]),
+                             serverconf.KEEP_BACKUPS)
+
+    def test_the_audit_log_keeps_only_the_command_name(self):
+        self.assertEqual(server._first_word("sv_password\thunter2"), "sv_password")
+        self.assertEqual(server._first_word("  status  "), "status")
+        self.assertEqual(server._first_word('"quoted" x'), "?")
+        self.assertEqual(server._first_word(None), "?")
+
+    def test_game_mode_is_read_from_sourcemods_answer(self):
+        panel = panel_mod.Panel.__new__(panel_mod.Panel)
+        panel.try_rcon = lambda command: (True, 'Unknown command "mp_gamemode"\n"sv_cheats" = "0"\n'
+                                                '[SM] Value of cvar "mp_gamemode": "versus"\n')
+        self.assertEqual(panel._ask_cvars(), {"sv_cheats": "0", "mp_gamemode": "versus"})
+        panel.try_rcon = lambda command: (True, 'Unknown command "mp_gamemode"\nUnknown command "sm_cvar"\n')
+        self.assertEqual(panel._ask_cvars(), {})
+
+    def test_a_huge_cvar_value_is_not_an_error(self):
+        self.assertFalse(panel_mod._cvar_on("1e999"))
+        self.assertIsNone(panel_mod._team({panel_mod.TEAM_CVAR: "1e999", panel_mod.TEAM_MAX_CVAR: "8"}))
+
+    def test_rcon_cooldown_only_holds_back_the_rejected_password(self):
+        self.addCleanup(rcon.forget_rejection)
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+        rcon._auth_rejected, rcon._auth_blocked_until = "wrong", time.time() + 600
+        with self.assertRaises(rcon.RconAuthError):
+            rcon.RconClient("wrong", "127.0.0.1", port, 1).connect()
+        with self.assertRaises(rcon.RconError) as caught:      # another password is tried at once
+            rcon.RconClient("right", "127.0.0.1", port, 1).connect()
+        self.assertNotIsInstance(caught.exception, rcon.RconAuthError)
+        rcon.forget_rejection()                                 # after a restart, so is the same one
+        with self.assertRaises(rcon.RconError) as caught:
+            rcon.RconClient("wrong", "127.0.0.1", port, 1).connect()
+        self.assertNotIsInstance(caught.exception, rcon.RconAuthError)
 
 
 class GameIoTests(unittest.TestCase):

@@ -18,6 +18,7 @@
 #  the `sudo -u` calls below stop working.
 # =============================================================================
 import contextlib
+import errno
 import fcntl
 import hashlib
 import io
@@ -102,6 +103,173 @@ HARRY_FILES = [
      "6f8943453fab3d9264f8bb34efdb5dbde785d4510aacadddfc04b9c5a66a68ba"),
 ]
 SLOT_PLUGINS = [os.path.basename(d) for _, d, _ in HARRY_FILES if d.endswith(".smx")]
+
+# ---- extra plugins (installed together with the mods above) ----
+# What each one is for is in the README, under "Extra plugins".
+#
+# From the same pinned commit as MultiSlots: Infected Bots Control (with the
+# spawner it needs), the !afk / !join commands and Skill Detect. The repo
+# folder is dropped to get the path under addons/sourcemod/.
+EXTRA_HARRY_FILES = [
+    ("spawn_infected_nolimit/gamedata/spawn_infected_nolimit.txt",
+     "e507328dc636bf345e69b3110e7de6bf9cddf40463f2dd97bf360794cea77d71"),
+    ("spawn_infected_nolimit/plugins/spawn_infected_nolimit.smx",
+     "6e27ce21950c8dd1c6dcb1479ba8e57c98c9af16ffe0f8e6ea63d6488d1f0393"),
+    ("l4dinfectedbots/plugins/l4dinfectedbots.smx",
+     "6290db515922236d26f46879b08f535d49923b5b5a2944d3919369ecb4e7fe60"),
+    ("l4dinfectedbots/gamedata/l4dinfectedbots.txt",
+     "14a6f4248d06f8b15f619df3512bb4bc99cf073143b35f7d446f005b480c74f7"),
+    ("l4dinfectedbots/translations/l4dinfectedbots.phrases.txt",
+     "945b88e9cb9305651ae80d701bf30cb475966f6e3d70803222cfe32ba4436a1e"),
+    ("l4d_afk_commands/gamedata/l4d_afk_commands.txt",
+     "43ec07a6f211dfde60f40fd748bba10433ac29b06d37a03be3a8da49d268d613"),
+    ("l4d_afk_commands/plugins/l4d_afk_commands.smx",
+     "a788d55caa1032fda38e0235dfb286fd7863f3e9e23f7fdb3b2c733209849e6b"),
+    ("l4d_afk_commands/translations/l4d_afk_commands.phrases.txt",
+     "d321783f1813227a615d1198d6b6fc698e7d85188a44bf167a0b6855705203e8"),
+    ("l4d2_skill_detect/plugins/l4d2_skill_detect.smx",
+     "9cc89022ce42b2c23519fc460f3f1b3214af4792c241d983bf96e2167dfa7674"),
+    ("l4d2_skill_detect/translations/l4d2_skill_detect.phrases.txt",
+     "dd9900d3e1a07bbf9ce13f338c188d23994b0100e86c09ec9980670ecf2b773e"),
+    ("l4dinfectedbots/data/l4dinfectedbots/community1.cfg",
+     "ce064f69d260c756e7ce473fb421e86a7d9239432903e238b45ce986433bf84e"),
+    ("l4dinfectedbots/data/l4dinfectedbots/community2.cfg",
+     "17ec3dc073484694be1ca8c74fbafe92e37a81014e6535d83e0acad71325b20f"),
+    ("l4dinfectedbots/data/l4dinfectedbots/community3.cfg",
+     "8e977c8bb647ff5243ed5401a18b5384bd3227c3948599af1d7c2458ada4c257"),
+    ("l4dinfectedbots/data/l4dinfectedbots/community4.cfg",
+     "3d21d2853cac9ea1d1b65dfbcf1440692757b7669a7ebd8da0d372251a4d41e1"),
+    ("l4dinfectedbots/data/l4dinfectedbots/community5.cfg",
+     "542a6c27a3214ddf967279ef84a15c4f9f051c2408e609acd8785ece97f5edde"),
+    ("l4dinfectedbots/data/l4dinfectedbots/community6.cfg",
+     "9aac4ceaa3a2a796b4c7f52f00c5daf3578a6900dc6497cbcd9bd9b2e09a1b81"),
+    ("l4dinfectedbots/data/l4dinfectedbots/coop.cfg",
+     "58e94238821dfc83db22382011dea1a47d313dc3050f39a1f7f8f1f506aa725e"),
+    ("l4dinfectedbots/data/l4dinfectedbots/custom_tanks.cfg",
+     "cadce2217293c6746828a87dd56a3cf4c9b110bb00bedb07af056045cde5cc40"),
+    ("l4dinfectedbots/data/l4dinfectedbots/dash.cfg",
+     "4911ca6e0536f1b7b4be65ba5755b98d62747df840ab34805f993f5a836cbb50"),
+    ("l4dinfectedbots/data/l4dinfectedbots/gunbrain.cfg",
+     "c541a0f707993eb8c22b8db9541866c3c7329523421258940d865725d6264e9e"),
+    ("l4dinfectedbots/data/l4dinfectedbots/holdout.cfg",
+     "a6c5deeb47b96040991f84456a72151112dffd20e5d0b179f4c8f1e0298413bf"),
+    ("l4dinfectedbots/data/l4dinfectedbots/l4d1coop.cfg",
+     "90e25083e552edd203d3cd5074db57855707777fb019bce159526a22012da920"),
+    ("l4dinfectedbots/data/l4dinfectedbots/l4d1survival.cfg",
+     "8edd819a8bdc1dfc824650e4ae0f9aa224449f6fc3ca407a721bd2af541342bb"),
+    ("l4dinfectedbots/data/l4dinfectedbots/l4d1vs.cfg",
+     "ff99b37b0ff7fa8c161a321e1d8152aa0c0bb033de32c4cf08e3855f148e1148"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation1.cfg",
+     "c16b7363b7101e8b12f33d469d418298d8807c2c31e68ae211f74635274ed4f9"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation10.cfg",
+     "32440c457fcf7d9ecc691644895b0924986cc1055350ceec6df55ef612ef105d"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation11.cfg",
+     "22446c48e20e06a74787affcdc7b9a956364a558d0313c7bb17e98741f29cd6a"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation12.cfg",
+     "893cff4e4e23cc35073b20e649e10c70675756fb424314b2b610ef344815551b"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation13.cfg",
+     "dbfc567ea796b8f759947fd8ef467fe8bc3aaa4c6258045c9aeab1c5b3072fed"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation14.cfg",
+     "bf6f5af81ad84377d8edcd668f4638fddfbf88fb0f96ecc8def30a0b3458c399"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation15.cfg",
+     "2a1c46bda14be624883c4e19a4b12fc132c4bf97e586de31610f43f12ed40c3b"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation16.cfg",
+     "6e83d75ffb5474a243635cba48a2d09a32c429639b033349732531a64b5ba7e0"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation17.cfg",
+     "7a653622b65dd280e792b81df58824f5ad4f3fd622e73771ce34c0a026064238"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation18.cfg",
+     "732a434e8945147c4b2c4ea560c7ca04147c51bf2b74ed94c72aed85cdc69d71"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation19.cfg",
+     "2bd085ae357063a17645ed9bf86aca87d03799ee5e9b908db614fdad7172b160"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation2.cfg",
+     "dc3d11d08c067b7f922f9e478cc388d05ebf12d4d181689ad758f040fa81d377"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation20.cfg",
+     "f917c1754a9b4d762f5c9901c1ff2b101e2255f5e9055ddaa6ee75c6331cad69"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation3.cfg",
+     "c8a00ffcc59fefc64a9ec22225ea3d7edadb66a17d4609b9d698101c78b71a06"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation4.cfg",
+     "aa0f8838bbe57408c5ab3919f6733e1af73fe721ae65716a319494b111dd53cb"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation5.cfg",
+     "a1f1c4e35ef4634476359afa6219cc5ec6158b5a324fa71e5eb3780863feaa0d"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation7.cfg",
+     "8a793d3b16a36993c65492bf11541eb286d6e11d0d884c2298b2861733ef8889"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation8.cfg",
+     "02d66109910511664cd32a26cd27bd5ea12ddcd4bc9280fcb2ebd077a9277d77"),
+    ("l4dinfectedbots/data/l4dinfectedbots/mutation9.cfg",
+     "40dc0bc3c532ee0d2523967ae61c57b69f7048faf08d6c9ae4f2697c46ecfdb2"),
+    ("l4dinfectedbots/data/l4dinfectedbots/realism.cfg",
+     "a0edad1ca33c62d8aaddddcc7f3e8c9da5c5272e4907dc2f1ff0c0524ec1c5b0"),
+    ("l4dinfectedbots/data/l4dinfectedbots/rocketdude.cfg",
+     "2f8405a57235da5b9b7598160e658c2c88b6df28b2a7c0fcdfa214eae6a47d85"),
+    ("l4dinfectedbots/data/l4dinfectedbots/scavenge.cfg",
+     "35bff9911eeab01776c33cc18415afce4b70d624f315b6f81d661849f79cfe02"),
+    ("l4dinfectedbots/data/l4dinfectedbots/shootzones.cfg",
+     "60f752c5f7cdf30f5e1157d887590a0d2c61274e96b315af10dd8c7a79a1a6d9"),
+    ("l4dinfectedbots/data/l4dinfectedbots/survival.cfg",
+     "cb8e0216e0a40d06dbd697250935571d5e56ff435c5efcf27b35119e243acdd5"),
+    ("l4dinfectedbots/data/l4dinfectedbots/tankrun.cfg",
+     "baa760c5a4d0d5e5aff3b254f6878334281c1739c064ae032d1f931a80e1f902"),
+    ("l4dinfectedbots/data/l4dinfectedbots/versus.cfg",
+     "3ec1726845b5a6847af26592c4e04cb31e2df6da3ac420fdf2817fb030b99b14"),
+]
+# Other authors, each pinned the same way: (url, path under addons/, sha256).
+RFF_COMMIT = "48e20c92975980e20f7392e38ac63700f9cabe62"
+MVP_COMMIT = "85139a242fafc913add3862c7066880b0ed9b991"
+EXTRA_FILES = [
+    # Reverse Friendly-Fire 2.9.2 (Mystik Spiral)
+    ("https://github.com/Mystik-Spiral/l4d_reverse_ff/releases/download/v2.9.2/l4d_reverse_ff.smx",
+     "sourcemod/plugins/l4d_reverse_ff.smx",
+     "4e79774b11606373d10906b8c343dab4018848fa2fd098243316ba4533455ba7"),
+    (f"https://raw.githubusercontent.com/Mystik-Spiral/l4d_reverse_ff/{RFF_COMMIT}/l4d_reverse_ff.phrases.txt",
+     "sourcemod/translations/l4d_reverse_ff.phrases.txt",
+     "e97d14162fa813d6380a47c6a708177d1a3f4dd1f8ab3459c8882d26ccb41e87"),
+    # Survivor MVP (Tabun), as built in SirPlease/L4D2-Competitive-Rework
+    (f"https://raw.githubusercontent.com/SirPlease/L4D2-Competitive-Rework/{MVP_COMMIT}"
+     "/addons/sourcemod/plugins/optional/survivor_mvp.smx",
+     "sourcemod/plugins/survivor_mvp.smx",
+     "31f5ca236925675eda4b0dab3a53816288ad4c9903666bc5aa8e6b63270689bb"),
+    # Left 4 Bots 2 and the library it needs (smilz0): script addons, not SourceMod plugins
+    ("https://github.com/smilz0/Left4Bots/releases/download/v2.3.11/Left4Bots2.vpk",
+     "left4bots2.vpk",
+     "9d9c5c1d8c218512daa489256b4af7b72f120f6243e3be9e6de1e4abca30e7fb"),
+    ("https://github.com/smilz0/Left4Lib/releases/download/v1.5.3/Left4Lib.vpk",
+     "left4lib.vpk",
+     "26b4169dc12422c1374e9fae8bbddd8f973f9307be71912011600a03f9ce6ad8"),
+]
+# The Actions extension (Vinillia) that the !afk commands and Skill Detect need.
+ACTIONS_ZIP = "https://github.com/Vinillia/actions.ext/releases/download/v4.0.1/actions.ext.zip"
+ACTIONS_SHA256 = "1a81e39f6bd4c67204144e1e726da772e8449f93f9f974775702aa9ce1b16c27"
+ACTIONS_MEMBERS = ("extensions/actions.ext.2.l4d2.so", "gamedata/actions.games.txt")
+# The Cleaner extension (Accelerator74): hides console spam. Its only builds sit
+# under a tag the author re-uses, so this file can disappear upstream; the
+# install then carries on without it (see install_cleaner). The "oldlinux"
+# build, because the other one needs a newer glibc than Ubuntu 22.04 has.
+CLEANER_TGZ = "https://github.com/Accelerator74/Cleaner/releases/download/build/Cleaner-sm1.12-oldlinux-e44f58d.tar.gz"
+CLEANER_SHA256 = "7f40df1c4e17f59b4fbb03a46f71352cc45f5f4d1b7e9d8639fd967f532a0960"
+CLEANER_MEMBER = "addons/sourcemod/extensions/cleaner.ext.2.l4d2.so"
+# Settings files an admin may edit: written once, never replaced by an update.
+# (path under left4dead2/, text)
+EXTRA_CONFIGS = [
+    ("cfg/sourcemod/l4d2_reverse_ff.cfg",
+     "// Reverse friendly fire: whoever shoots a teammate takes the damage instead.\n"
+     "// Off until an admin turns it on with !reverseff in game or the web panel's\n"
+     "// switch; that choice then lasts until the server restarts. Set this to 1 to\n"
+     "// have it on from the start.\n"
+     'reverseff_enabled "0"\n'
+     "// Among friends: nobody is kicked or banned for friendly fire (0 = never).\n"
+     'reverseff_survivormaxdmg "0"\n'
+     'reverseff_infectedmaxdmg "0"\n'
+     'reverseff_tankmaxdmg "0"\n'),
+    ("addons/sourcemod/configs/cleaner.cfg",
+     "DataTable warning\n"
+     "CreateFragmentsFromFile\n"
+     "CSoundEmitterSystemBase\n"
+     "unable to find gesture\n"),
+]
+# Map votes: these ship with SourceMod, switched off. Players type rtv or
+# nominate in chat; the choices are the campaigns in CAMPAIGN_LIST.
+VOTE_PLUGINS = ("mapchooser.smx", "rockthevote.smx", "nominations.smx")
+CAMPAIGN_LIST = "addons/sourcemod/configs/l4d2_campaigns.txt"
 LOCK_FILE = "/run/l4d2.lock"
 KEEP_BACKUPS = 10
 CFG_BEGIN = "// >>> player slots - managed by 'l4d2 slots', do not edit by hand"
@@ -301,6 +469,19 @@ def read_file(path, default=""):
         return default
 
 
+def read_config(path):
+    """Text of a file we are about to rewrite: "" only when it does not exist.
+
+    Any other failure is raised. Treating an unreadable server.cfg as empty
+    would replace it with just the lines being added.
+    """
+    try:
+        with open(path, errors="replace") as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
 def safe_name(name):
     name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(name))
     return name if name.lower().endswith(".vpk") else name + ".vpk"
@@ -319,6 +500,23 @@ def load_index():
 
 def save_index(idx):
     write_file(INDEX, json.dumps(idx, indent=2, sort_keys=True).encode())
+    try:
+        write_campaign_list()         # the map vote offers what is installed
+    except OSError as e:
+        print(f"  ! The map vote's campaign list was not updated ({e}).")
+
+
+def write_campaign_list():
+    """List what a map vote (rtv) offers: each official campaign, then the installed custom ones."""
+    if not os.path.isdir(os.path.join(SMDIR, "configs")):
+        return                        # no SourceMod, no votes
+    names = [m for m, _ in OFFICIAL]
+    for _, item in sorted(load_index().items()):
+        maps = item.get("maps")
+        first = item.get("first_map") or (maps[0] if isinstance(maps, list) and maps else "")
+        if isinstance(first, str) and MAPNAME_RE.match(first) and first.lower() not in names:
+            names.append(first.lower())
+    write_file(os.path.join(GAME, *CAMPAIGN_LIST.split("/")), ("\n".join(names) + "\n").encode())
 
 
 def parse_workshop_id(s):
@@ -551,6 +749,31 @@ def steamcmd_download(wid):
 
 
 # ----------------------------------------------------------------- install / remove
+def move_into_place(src, dest):
+    """Move src over dest atomically, replacing a link at dest rather than following it."""
+    try:
+        os.replace(src, dest)
+        return
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+    # The server folder is on another disk than the scratch folder: copy next
+    # to the destination first, so the final step is still one atomic rename.
+    fd, tmp = tempfile.mkstemp(prefix=".l4d2-", dir=os.path.dirname(dest))
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out)
+            os.fchmod(out.fileno(), 0o644)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.unlink(src)
+
+
 def install_vpk(src, dest_name, key, meta):
     info = vpk_info(src)
     if info is None:
@@ -563,7 +786,7 @@ def install_vpk(src, dest_name, key, meta):
         return None
     os.chmod(src, 0o644)
     os.utime(src, None)           # mark as "newer than the running server"
-    os.replace(src, dest)         # same filesystem: atomic, and replaces a link rather than following it
+    move_into_place(src, dest)
     meta.update(file=dest_name, maps=info["maps"], first_map=info["first_map"],
                 campaign=info["campaign"] or meta.get("title"), added=int(time.time()))
     idx = load_index()
@@ -737,8 +960,9 @@ def share_text():
     return "\n".join(lines)
 
 
-def find_items(arg):
-    idx = load_index()
+def find_items(arg, idx=None):
+    if idx is None:
+        idx = load_index()
     wid = parse_workshop_id(arg)
     a = arg.lower()
     return [k for k, m in idx.items()
@@ -754,7 +978,7 @@ def cmd_removemap(args):
     idx = load_index()
     removed = False
     for t in targets:
-        keys = find_items(t)
+        keys = find_items(t, idx)     # the copy being edited: a map named twice is found once
         if not keys:
             print(f"x {t}: not found. See installed maps with: l4d2 maps")
             continue
@@ -807,7 +1031,16 @@ def cmd_changemap(args, from_menu=False):
     if not server_pid():
         print("The server isn't running." + (" It will start on this map: l4d2 start" if make_default else ""))
         return
-    if pending_addons():
+    waiting = pending_addons()
+    if waiting and "--no-restart" in flags:
+        if any(m.get("file") in waiting and name.lower() in [str(n).lower() for n in m.get("maps") or []]
+               for m in load_index().values()):
+            print(f"Not switched: {name} was installed since the server started and only loads "
+                  "after a restart. Run: l4d2 restart")
+            return 1
+        print("New addons were added since the server started; they load only after a restart "
+              "(l4d2 restart). Switching without one, as asked.")
+    elif waiting:
         print("New addons were added since the server started; they load only after a restart.")
         if make_default or ask_yes(f"Restart now and start on {name}? (makes it the default map)"):
             if not make_default:
@@ -852,8 +1085,9 @@ def cmd_update(_args):
     if mods_installed():
         try:
             install_mods(update=True)
-        except PermissionError:
-            raise                     # not a download problem: main() explains the fix
+        except PermissionError as e:  # still start the server: it was stopped above
+            problems.append(f"mods were not refreshed ({e}) - something in {HOME} doesn't belong "
+                            f"to the game user. Fix with: sudo chown -R -h {USER}: {HOME}")
         except Exception as e:
             problems.append(f"mods were not refreshed ({e})")
     if systemctl("start") != 0:
@@ -1043,6 +1277,62 @@ def install_harry_plugins():
             os.remove(stale)
 
 
+def use_campaign_list():
+    """Point SourceMod's map votes at our campaign list instead of every chapter of every map.
+
+    Only the stock line is replaced: a maplists.cfg someone has edited is left alone.
+    """
+    path = os.path.join(SMDIR, "configs", "maplists.cfg")
+    text = read_file(path)
+    new = re.sub(r'("default"\s*\{\s*)"target"(\s*)"mapcyclefile"', rf'\1"file"\2"{CAMPAIGN_LIST}"', text, count=1)
+    if new != text:
+        write_file(path, new.encode())
+
+
+def install_cleaner():
+    """Best effort, unlike everything else: see CLEANER_TGZ for why."""
+    try:
+        data = verified(fetch(CLEANER_TGZ, timeout=300), CLEANER_SHA256, "the Cleaner extension")
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+            library = t.extractfile(CLEANER_MEMBER).read()
+    except Exception as e:
+        print(f"  ! Cleaner (it only hides console spam) was not installed: {e}")
+        return
+    extensions = os.path.join(SMDIR, "extensions")
+    write_file(os.path.join(extensions, os.path.basename(CLEANER_MEMBER)), library)
+    write_file(os.path.join(extensions, "cleaner.autoload"), b"")
+
+
+def install_extras():
+    """The extra plugins. Like the MultiSlots set: nothing is written until every file checked out."""
+    print("  Extra plugins    (big-team balance, !afk, stats, map votes, Left 4 Bots 2)")
+    files = [("sourcemod/" + src.split("/", 1)[1], verified(fetch(HARRY_RAW + src), sha, os.path.basename(src)))
+             for src, sha in EXTRA_HARRY_FILES]
+    files += [(dest, verified(fetch(url, timeout=300), sha, os.path.basename(dest)))
+              for url, dest, sha in EXTRA_FILES]
+    actions = verified(fetch(ACTIONS_ZIP, timeout=300), ACTIONS_SHA256, "the Actions extension")
+    with zipfile.ZipFile(io.BytesIO(actions)) as z:
+        files += [("sourcemod/" + name, z.read(name)) for name in ACTIONS_MEMBERS]
+    for dest, data in files:
+        path = os.path.join(ADDONS, *dest.split("/"))
+        if dest.startswith("sourcemod/data/") and os.path.exists(path):
+            continue                           # settings an admin may have edited
+        write_file(path, data)
+    for rel, text in EXTRA_CONFIGS:
+        path = os.path.join(GAME, *rel.split("/"))
+        if not os.path.exists(path):
+            write_file(path, text.encode())
+    plugins = os.path.join(SMDIR, "plugins")
+    for name in VOTE_PLUGINS:                  # copied, so a SourceMod update refreshes them too
+        shipped = os.path.join(plugins, "disabled", name)
+        if os.path.isfile(shipped):
+            with open(shipped, "rb") as f:
+                write_file(os.path.join(plugins, name), f.read())
+    use_campaign_list()
+    write_campaign_list()
+    install_cleaner()
+
+
 def switch_slot_plugins(on):
     """Move the MultiSlots plugins between plugins/ and plugins/disabled/."""
     plugins = os.path.join(SMDIR, "plugins")
@@ -1067,7 +1357,8 @@ def switch_slot_plugins(on):
 #       Francis/Louis bot crashed the server ("UTIL_SetModel: not precached").
 #       This loads all eight on every map, the first included.
 #   l4d2_admin_extras        Chat commands for admins: !extras, !difficulty,
-#       !mode, !tank, !witch, !horde, !tankrun, !restartmap.
+#       !mode, !tank, !witch, !horde, !tankrun, !restartmap, !reverseff. Also
+#       loads the next official campaign when a co-op finale is won.
 PLUGIN_SRC = "/usr/local/share/l4d2/plugins"
 OWN_PLUGINS = ("l4d2_precache_survivors", "l4d2_admin_extras")
 
@@ -1116,19 +1407,33 @@ def mods_installed():
 
 def install_mods(update=False):
     """Download/refresh everything. update=True keeps existing SourceMod configs."""
-    print("Installing server mods (SourceMod, Metamod, L4DToolZ, MultiSlots)...")
+    print("Installing server mods (SourceMod, Metamod, L4DToolZ, MultiSlots, extra plugins)...")
     sm_present = mods_installed()
     install_metamod(update or sm_present)
     install_sourcemod(update or sm_present)
     install_l4dtoolz()
     install_left4dhooks()
     install_harry_plugins()
+    install_extras()
     install_own_plugins()
     print("  Mods installed.")
 
 
+# Rescue closets with more than four players: a dead survivor can be rescued
+# straight away and from much further off, instead of the game's usual wait.
+# The game guards these as cheats, so they are set through SourceMod.
+RESCUE_CVARS = (
+    ("rescue_min_dead_time", "0"),
+    ("rescue_distance", "0"),
+    ("rescue_interval", "0.5"),
+    ("rescue_range", "3000"),
+    ("rescue_spawn_range", "5000"),
+    ("rescue_spawn_flow", "2000"),
+)
+
+
 def set_cfg_block(lines_or_none):
-    text = read_file(CFG)
+    text = read_config(CFG)
     text = re.sub(re.escape(CFG_BEGIN) + r".*?" + re.escape(CFG_END) + r"\n?", "", text, flags=re.S)
     if lines_or_none:
         if text and not text.endswith("\n"):
@@ -1138,7 +1443,7 @@ def set_cfg_block(lines_or_none):
 
 
 def set_cvars_in_file(path, values):
-    text = read_file(path)
+    text = read_config(path)
     for k, v in values.items():
         line = f'{k} "{v}"'
         pat = re.compile(r'^[ \t]*' + re.escape(k) + r'[ \t]+.*$', re.M)
@@ -1197,7 +1502,7 @@ def backup_cfg():
     write_file(f"{CFG}.bak.{int(time.time())}", text.encode(), 0o600)
     folder, prefix = os.path.dirname(CFG), os.path.basename(CFG) + ".bak."
     stamps = sorted((int(n[len(prefix):]), n) for n in os.listdir(folder)
-                    if n.startswith(prefix) and n[len(prefix):].isdigit())
+                    if n.startswith(prefix) and re.fullmatch(r"[0-9]+", n[len(prefix):]))
     for _, name in stamps[:-KEEP_BACKUPS]:
         try:
             os.remove(os.path.join(folder, name))
@@ -1218,8 +1523,8 @@ def cmd_init_config(_args):
               ("sv_password", os.environ.get("L4D2_SET_PASSWORD"), ""),
               ("rcon_password", os.environ.get("L4D2_SET_RCON"), "empty = remote admin disabled"),
               ("z_difficulty", clean_cvar(os.environ.get("L4D2_SET_DIFFICULTY")) or "Normal", "")]
-    text = read_file(CFG, None)
-    if text is None or not text.strip():
+    text = read_config(CFG)
+    if not text.strip():
         text = ("// Created by l4d2-setup.sh on " + time.strftime("%Y-%m-%d") + "\n"
                 "sv_allow_lobby_connect_only 0       // allow joining directly by IP\n"
                 'sv_gametypes "coop,realism,versus,survival,scavenge"\n'
@@ -1272,6 +1577,8 @@ def cmd_slots(args):
             "sv_force_unreserved 1          // L4DToolZ: no lobby reservation (lobbies cap co-op at 4)",
             "sm_cvar precache_all_survivors 1  // load all survivor models (prevents crashes with 5+)",
             "sv_consistency 0",
+            "// dead survivors come back through rescue closets quickly",
+            *(f"sm_cvar {name} {value}" for name, value in RESCUE_CVARS),
         ])
         set_cvars_in_file(os.path.join(GAME, "cfg", "sourcemod", "l4dmultislots.cfg"), {
             "l4d_multislots_max_survivors": n,
@@ -1307,7 +1614,7 @@ def cmd_admin(args):
     sid = args[0].strip()
     if not STEAMID_RE.match(sid):
         die("that doesn't look like a SteamID. Use the STEAM_1:... or 7656119... form from steamid.io")
-    text = read_file(ini)
+    text = read_config(ini)
     if f'"{sid}"' in text:
         print(f"{sid} is already an admin.")
         return
@@ -1534,7 +1841,7 @@ def dispatch(cmd, rest):
     elif cmd in ("maps", "list"):
         cmd_maps(rest)
     elif cmd in ("changemap", "change", "map"):
-        cmd_changemap(rest)
+        return cmd_changemap(rest)
     elif cmd in ("removemap", "remove"):
         cmd_removemap(rest)
     elif cmd == "updatemaps":
@@ -1591,6 +1898,9 @@ def main():
         return dispatch(cmd, args[1:])
     except PermissionError as e:
         print(permission_hint(e), file=sys.stderr)
+        return 1
+    except OSError as e:              # e.g. server.cfg is a broken link or a folder
+        print(f"Error: {e}", file=sys.stderr)
         return 1
 
 

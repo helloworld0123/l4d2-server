@@ -140,7 +140,10 @@ def backup(path):
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
-    backups = sorted(glob.glob(glob.escape(path) + ".bak.*"), key=_backup_time)
+    # Only our own timestamped copies: server.cfg.bak.before-mods is the admin's to keep.
+    prefix = path + ".bak."
+    backups = sorted((name for name in glob.glob(glob.escape(prefix) + "*")
+                      if re.fullmatch(r"[0-9]+", name[len(prefix):])), key=_backup_time)
     for old in backups[:-KEEP_BACKUPS]:
         try:
             os.unlink(old)

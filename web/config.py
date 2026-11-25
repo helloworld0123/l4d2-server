@@ -2,9 +2,10 @@
 
 import os
 
+from bot import rcon
 from bot.config import load_env_file
 
-from . import gameio, serverconf
+from . import gameio
 
 WEB_ENV = os.environ.get("L4D2_WEB_ENV", "/etc/l4d2-web.env")
 SERVER_ENV = os.environ.get("L4D2_ENV", "/etc/l4d2.env")
@@ -84,7 +85,7 @@ class WebConfig:
             text = gameio.call(self.game_user, "read", path=self.cfg_path)
         except OSError:
             return ""
-        return (serverconf.read_cvar(text, "rcon_password") or "").strip()
+        return rcon.parse_password(text)   # as the game and the bot read it
 
     @classmethod
     def load(cls, path=WEB_ENV, server_env_path=SERVER_ENV):

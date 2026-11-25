@@ -6,6 +6,7 @@ fetches and systemctl are stubbed. Running unprivileged also exercises the
 """
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -15,6 +16,7 @@ import os
 import re
 import stat
 import struct
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -196,6 +198,128 @@ class PinnedModTests(CliCase):
         self.assertIn("plugins/left4dhooks.smx", cli.L4DHOOKS_FILES)
         self.assertEqual(len(cli.SLOT_PLUGINS), 6)
 
+    def test_every_extra_plugin_download_is_pinned(self):
+        hex64 = re.compile(r"^[0-9a-f]{64}$")
+        for value in (cli.ACTIONS_SHA256, cli.CLEANER_SHA256, *(s for _, s in cli.EXTRA_HARRY_FILES),
+                      *(s for _, _, s in cli.EXTRA_FILES)):
+            self.assertRegex(value, hex64)
+        for url in (cli.ACTIONS_ZIP, cli.CLEANER_TGZ, *(u for u, _, _ in cli.EXTRA_FILES)):
+            self.assertTrue(url.startswith("https://"), url)
+            for moving in ("/master", "/main", "refs/heads", "latest"):
+                self.assertNotIn(moving, url)
+        # Each plugin comes with everything it refuses to start without.
+        harry = {src for src, _ in cli.EXTRA_HARRY_FILES}
+        for needed in ("l4dinfectedbots/plugins/l4dinfectedbots.smx", "l4dinfectedbots/gamedata/l4dinfectedbots.txt",
+                       "l4dinfectedbots/data/l4dinfectedbots/coop.cfg", "l4dinfectedbots/data/l4dinfectedbots/realism.cfg",
+                       "spawn_infected_nolimit/plugins/spawn_infected_nolimit.smx",
+                       "l4d_afk_commands/plugins/l4d_afk_commands.smx", "l4d2_skill_detect/plugins/l4d2_skill_detect.smx"):
+            self.assertIn(needed, harry)
+        self.assertIn("extensions/actions.ext.2.l4d2.so", cli.ACTIONS_MEMBERS)
+        placed = [dest for _, dest, _ in cli.EXTRA_FILES]
+        self.assertEqual(len(placed), len(set(placed)))
+        # The reverse friendly fire switch starts off, and never kicks or bans anyone.
+        reverse_ff = dict(cli.EXTRA_CONFIGS)["cfg/sourcemod/l4d2_reverse_ff.cfg"]
+        for line in ('reverseff_enabled "0"', 'reverseff_survivormaxdmg "0"'):
+            self.assertIn(line, reverse_ff)
+
+    def stub_extras(self):
+        """install_extras() against a made-up set of downloads. Returns {url: bytes}."""
+        names = ("EXTRA_HARRY_FILES", "EXTRA_FILES", "ACTIONS_SHA256", "CLEANER_SHA256")
+        saved = {n: getattr(cli, n) for n in names}
+        self.addCleanup(lambda: [setattr(cli, n, v) for n, v in saved.items()])
+        actions = io.BytesIO()
+        with zipfile.ZipFile(actions, "w") as z:
+            for name in cli.ACTIONS_MEMBERS:
+                z.writestr(name, "actions " + name)
+            z.writestr("extensions/actions.ext.2.tf2.so", "another game")
+        cleaner = io.BytesIO()
+        with tarfile.open(fileobj=cleaner, mode="w:gz") as t:
+            info = tarfile.TarInfo(cli.CLEANER_MEMBER)
+            info.size = 7
+            t.addfile(info, io.BytesIO(b"CLEANER"))
+        served = {cli.HARRY_RAW + "bots/plugins/bots.smx": b"BOTS", cli.HARRY_RAW + "bots/data/bots/coop.cfg": b"STOCK",
+                  "https://example.invalid/addon.vpk": b"VPK", cli.ACTIONS_ZIP: actions.getvalue(),
+                  cli.CLEANER_TGZ: cleaner.getvalue()}
+        cli.EXTRA_HARRY_FILES = [("bots/plugins/bots.smx", sha(b"BOTS")), ("bots/data/bots/coop.cfg", sha(b"STOCK"))]
+        cli.EXTRA_FILES = [("https://example.invalid/addon.vpk", "addon.vpk", sha(b"VPK"))]
+        cli.ACTIONS_SHA256, cli.CLEANER_SHA256 = sha(served[cli.ACTIONS_ZIP]), sha(served[cli.CLEANER_TGZ])
+        cli.fetch = lambda url, timeout=60: served[url]
+        # What SourceMod's own package leaves behind.
+        for name in cli.VOTE_PLUGINS:
+            write(os.path.join(cli.SMDIR, "plugins", "disabled", name), "shipped " + name)
+        write(os.path.join(cli.SMDIR, "configs", "maplists.cfg"),
+              '"MapLists"\n{\n\t"default"\n\t{\n\t\t"target"\t\t"mapcyclefile"\n\t}\n'
+              '\t"mapchooser"\n\t{\n\t\t"target"\t\t"default"\n\t}\n}\n')
+        return served
+
+    def test_extras_install_all_or_nothing(self):
+        served = self.stub_extras()
+        good = served["https://example.invalid/addon.vpk"]
+        served["https://example.invalid/addon.vpk"] = b"TAMPERED"
+        with self.assertRaises(IOError):
+            self.run_quiet(cli.install_extras)
+        self.assertFalse(os.path.exists(os.path.join(cli.SMDIR, "plugins", "bots.smx")))
+        self.assertFalse(os.path.exists(os.path.join(cli.SMDIR, "plugins", "rockthevote.smx")))
+
+        served["https://example.invalid/addon.vpk"] = good
+        cli.save_index({"1": {"first_map": "Custom_Start", "maps": ["custom_start", "custom_end"]},
+                    "2": {"first_map": "bad name; quit"}})
+        self.run_quiet(cli.install_extras)
+        sm = cli.SMDIR
+        self.assertEqual(read(os.path.join(sm, "plugins", "bots.smx")), "BOTS")
+        self.assertEqual(read(os.path.join(sm, "data", "bots", "coop.cfg")), "STOCK")
+        self.assertEqual(read(os.path.join(cli.ADDONS, "addon.vpk")), "VPK")
+        self.assertEqual(read(os.path.join(sm, "extensions", "actions.ext.2.l4d2.so")),
+                         "actions extensions/actions.ext.2.l4d2.so")
+        self.assertFalse(os.path.exists(os.path.join(sm, "extensions", "actions.ext.2.tf2.so")))
+        self.assertEqual(read(os.path.join(sm, "extensions", "cleaner.ext.2.l4d2.so")), "CLEANER")
+        self.assertEqual(read(os.path.join(sm, "extensions", "cleaner.autoload")), "")
+        self.assertIn("unable to find gesture", read(os.path.join(sm, "configs", "cleaner.cfg")))
+        for name in cli.VOTE_PLUGINS:              # switched on, and still there for SourceMod's updater
+            self.assertEqual(read(os.path.join(sm, "plugins", name)), "shipped " + name)
+            self.assertTrue(os.path.exists(os.path.join(sm, "plugins", "disabled", name)))
+        # Votes offer campaigns, not every chapter: official ones, then what is installed.
+        maplists = read(os.path.join(sm, "configs", "maplists.cfg"))
+        self.assertIn(f'"file"\t\t"{cli.CAMPAIGN_LIST}"', maplists)
+        self.assertIn('"target"\t\t"default"', maplists)
+        campaigns = read(os.path.join(cli.GAME, *cli.CAMPAIGN_LIST.split("/"))).split()
+        self.assertEqual(campaigns, [m for m, _ in cli.OFFICIAL] + ["custom_start"])
+
+    def test_extras_update_keeps_edited_settings(self):
+        served = self.stub_extras()
+        self.run_quiet(cli.install_extras)
+        reverse_ff = os.path.join(cli.GAME, "cfg", "sourcemod", "l4d2_reverse_ff.cfg")
+        self.assertIn('reverseff_enabled "0"', read(reverse_ff))
+        edited = {reverse_ff: 'reverseff_enabled "1"\n',
+                  os.path.join(cli.SMDIR, "data", "bots", "coop.cfg"): "TUNED",
+                  os.path.join(cli.SMDIR, "configs", "cleaner.cfg"): "my own line\n",
+                  os.path.join(cli.SMDIR, "configs", "maplists.cfg"): '"MapLists"\n{\n}\n'}
+        for path, text in edited.items():
+            write(path, text)
+        served[cli.HARRY_RAW + "bots/plugins/bots.smx"] = b"BOTS v2"
+        cli.EXTRA_HARRY_FILES[0] = ("bots/plugins/bots.smx", sha(b"BOTS v2"))
+        self.run_quiet(cli.install_extras)
+        self.assertEqual(read(os.path.join(cli.SMDIR, "plugins", "bots.smx")), "BOTS v2")
+        for path, text in edited.items():
+            self.assertEqual(read(path), text)
+
+    def test_extras_install_without_the_cleaner_download(self):
+        served = self.stub_extras()
+        del served[cli.CLEANER_TGZ]                # gone upstream
+        _, out = self.run_quiet(cli.install_extras)
+        self.assertIn("Cleaner", out)
+        self.assertIn("was not installed", out)
+        self.assertEqual(read(os.path.join(cli.SMDIR, "plugins", "bots.smx")), "BOTS")
+        self.assertFalse(os.path.exists(os.path.join(cli.SMDIR, "extensions", "cleaner.autoload")))
+
+    def test_campaign_list_follows_the_installed_maps(self):
+        cli.save_index({"1": {"first_map": "one_start"}})          # no SourceMod: nothing to list for
+        self.assertFalse(os.path.exists(os.path.join(cli.GAME, *cli.CAMPAIGN_LIST.split("/"))))
+        os.makedirs(os.path.join(cli.SMDIR, "configs"))
+        cli.save_index({"1": {"first_map": "one_start"}, "2": {"maps": ["two_a", "two_b"]}, "3": {"first_map": "C1M1_Hotel"}})
+        campaigns = read(os.path.join(cli.GAME, *cli.CAMPAIGN_LIST.split("/"))).split()
+        self.assertEqual(campaigns, [m for m, _ in cli.OFFICIAL] + ["one_start", "two_a"])
+
     def test_own_plugins_are_built_with_the_bundled_compiler(self):
         repo_plugins = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cli", "plugins")
         saved = cli.PLUGIN_SRC
@@ -260,7 +384,7 @@ class PinnedModTests(CliCase):
     def stub_mod_installs(self, own_fails=False):
         """install_mods() without downloads: the MultiSlots plugins are real, the rest no-ops."""
         names = ("install_metamod", "install_sourcemod", "install_l4dtoolz", "install_left4dhooks",
-                 "install_own_plugins")
+                 "install_extras", "install_own_plugins")
         saved = {n: getattr(cli, n) for n in names}
         self.addCleanup(lambda: [setattr(cli, n, f) for n, f in saved.items()])
         for n in names:
@@ -511,6 +635,19 @@ class LockAndStatusTests(CliCase):
         self.assertIn("L4D2_SLOTS=4\n", read(cli.ENV_FILE))
         self.assertIn("L4D2_MAXCLIENTS=18\n", read(cli.ENV_FILE))
 
+    def test_slots_set_the_quick_rescue_cvars_once(self):
+        cli.install_mods = lambda update=False: None
+        os.makedirs(os.path.join(cli.SMDIR, "plugins", "disabled"), exist_ok=True)
+        os.makedirs(os.path.join(cli.GAME, "cfg", "sourcemod"), exist_ok=True)
+        wanted = ["sm_cvar rescue_min_dead_time 0", "sm_cvar rescue_distance 0", "sm_cvar rescue_interval 0.5",
+                  "sm_cvar rescue_range 3000", "sm_cvar rescue_spawn_range 5000", "sm_cvar rescue_spawn_flow 2000"]
+        for count in ("8", "10"):                       # applying again must not stack the lines
+            self.run_quiet(cli.cmd_slots, [count, "--no-restart"])
+            lines = read(cli.CFG).splitlines()
+            self.assertEqual([line for line in lines if "rescue_" in line], wanted)
+        self.run_quiet(cli.cmd_slots, ["4", "--no-restart"])
+        self.assertNotIn("rescue_", read(cli.CFG))      # sm_cvar needs the mods; gone with the block
+
     def test_editing_config_does_not_hold_the_lock(self):
         self.assertNotIn("config", cli.LOCKING)
         for name in ("addmap", "removemap", "update", "slots", "restart", "changemap", "init-config"):
@@ -610,6 +747,87 @@ class LockAndStatusTests(CliCase):
                      "modcheck", "menu"):
             self.assertIn(f'"{name}"', body, name)
             self.assertIn(name, cli.HELP)
+
+
+class ReviewFixTests(CliCase):
+    def patch(self, obj, name, value):
+        old = getattr(obj, name)
+        self.addCleanup(setattr, obj, name, old)
+        setattr(obj, name, value)
+
+    def test_update_starts_the_server_again_after_a_permission_error(self):
+        class Result:
+            returncode = 0
+
+        def refuse(update=False):
+            raise PermissionError(13, "Permission denied", "addons/metamod")
+
+        self.patch(cli.subprocess, "run", lambda *a, **k: Result())
+        self.patch(cli, "cmd_updatemaps", lambda flags: [])
+        self.patch(cli, "mods_installed", lambda: True)
+        cli.install_mods = refuse
+        write(os.path.join(cli.DIR, "srcds_run"), "")
+        code, out = self.run_quiet(cli.cmd_update, [])
+        self.assertEqual(code, 1)
+        self.assertEqual(self.systemctl_calls, ["stop", "start"])
+        self.assertIn("sudo chown -R -h", out)
+
+    def test_an_unreadable_server_cfg_is_not_replaced(self):
+        os.symlink(cli.CFG, cli.CFG)              # opening it fails, and not with "no such file"
+        for change in (lambda: cli.set_cfg_block(["sv_maxplayers 8"]), lambda: cli.set_cfg_block(None),
+                       lambda: cli.cmd_init_config([]), lambda: cli.set_cvars_in_file(cli.CFG, {"a": 1})):
+            with self.assertRaises(OSError):
+                self.run_quiet(change)
+            self.assertTrue(os.path.islink(cli.CFG))
+        os.remove(cli.CFG)
+        cli.set_cfg_block(["sv_maxplayers 8"])    # a missing file is still simply created
+        self.assertIn("sv_maxplayers 8", read(cli.CFG))
+
+    def test_addmap_works_when_addons_is_on_another_disk(self):
+        real = os.replace
+
+        def replace(src, dest):
+            if os.path.dirname(src) != os.path.dirname(dest):
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            return real(src, dest)
+
+        self.patch(cli.os, "replace", replace)
+        src = os.path.join(self.root, "far.vpk")
+        make_vpk(src, "far_m1")
+        added, _ = self.run_quiet(cli.add_targets, [src])
+        self.assertEqual([m["first_map"] for m in added], ["far_m1"])
+        self.assertEqual(os.listdir(cli.ADDONS), ["far.vpk"])
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(cli.ADDONS, "far.vpk")).st_mode), 0o644)
+        self.assertEqual([n for n in os.listdir(cli.HOME) if n.startswith(".l4d2-tmp")], [])
+
+    def test_removemap_with_the_same_map_named_twice(self):
+        make_vpk(os.path.join(cli.ADDONS, "123456.vpk"))
+        write(cli.INDEX, json.dumps({"123456": {"campaign": "X", "id": "123456", "file": "123456.vpk",
+                                                "maps": ["testmap"]}}))
+        _, out = self.run_quiet(cli.cmd_removemap, ["123456", "123456.vpk", "--no-restart"])
+        self.assertEqual(cli.load_index(), {})
+        self.assertFalse(os.path.exists(os.path.join(cli.ADDONS, "123456.vpk")))
+        self.assertIn("123456.vpk: not found", out)
+
+    def test_changemap_no_restart_never_restarts(self):
+        sent = []
+        cli.server_pid = lambda: 1
+        self.patch(cli, "pending_addons", lambda: ["new.vpk"])
+        self.patch(cli, "send_console", lambda command: sent.append(command) or True)
+        _, out = self.run_quiet(cli.cmd_changemap, ["c2m1_highway", "--default", "--no-restart"])
+        self.assertEqual(self.systemctl_calls, [])
+        self.assertEqual(sent, ["changelevel c2m1_highway"])
+        self.assertIn("L4D2_MAP=c2m1_highway", read(cli.ENV_FILE))
+        self.assertIn("l4d2 restart", out)
+        # A map that is itself waiting for a restart can't be switched to: say so, and fail.
+        write(cli.INDEX, json.dumps({"9": {"campaign": "New", "file": "new.vpk", "maps": ["New_M1"]}}))
+        code, out = self.run_quiet(cli.cmd_changemap, ["new_m1", "--default", "--no-restart"])
+        self.assertEqual(code, 1)
+        self.assertIn("Not switched", out)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("L4D2_MAP=new_m1", read(cli.ENV_FILE))
+        self.run_quiet(cli.cmd_changemap, ["c3m1_plankcountry", "--default"])   # without the flag: as before
+        self.assertEqual(self.systemctl_calls, ["restart"])
 
 
 if __name__ == "__main__":

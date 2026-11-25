@@ -31,25 +31,25 @@
       </div>
     </div>
     <div class="power">
-      <button class="btn" id="btn-start" data-control="start">Start</button>
-      <button class="btn" id="btn-restart" data-control="restart">Restart</button>
-      <button class="btn danger" id="btn-stop" data-control="stop">Stop</button>
+      <button class="btn" id="btn-start" data-control="start" hidden>Start</button>
+      <button class="btn" id="btn-restart" data-control="restart" hidden>Restart</button>
+      <button class="btn danger" id="btn-stop" data-control="stop" hidden>Stop</button>
       <button class="btn ghost" id="btn-logout">Sign out</button>
     </div>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
-    <button role="tab" data-tab="maps" aria-selected="false">Maps</button>
-    <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
-    <button role="tab" data-tab="console" aria-selected="false">Console</button>
-  </nav>
-
-  <div id="banners"></div>
+  <div class="tabs" role="tablist" aria-label="Sections">
+    <button role="tab" id="tabbtn-overview" data-tab="overview" aria-controls="tab-overview" aria-selected="true">Overview</button>
+    <button role="tab" id="tabbtn-maps" data-tab="maps" aria-controls="tab-maps" aria-selected="false" tabindex="-1">Maps</button>
+    <button role="tab" id="tabbtn-settings" data-tab="settings" aria-controls="tab-settings" aria-selected="false" tabindex="-1">Settings<span class="unsaved" id="settings-unsaved" hidden><span class="sr-only">unsaved changes</span></span></button>
+    <button role="tab" id="tabbtn-console" data-tab="console" aria-controls="tab-console" aria-selected="false" tabindex="-1">Console</button>
+  </div>
 
   <main class="content">
+    <div id="banners"></div>
+
     <!-- ------------------------------------------------------ overview -->
-    <section id="tab-overview" class="tab">
+    <section id="tab-overview" class="tab" role="tabpanel" aria-labelledby="tabbtn-overview">
       <div class="tiles">
         <div class="tile"><span class="label">Players</span><strong id="t-players">–</strong><span class="sub" id="t-bots"></span></div>
         <div class="tile"><span class="label">Map</span><strong id="t-map">–</strong><span class="sub" id="t-campaign"></span></div>
@@ -57,11 +57,21 @@
         <div class="tile"><span class="label">Uptime</span><strong id="t-uptime">–</strong><span class="sub" id="t-service"></span></div>
       </div>
 
-      <div class="grid">
-        <div class="card span2">
+      <div class="modifiers" id="modifiers" role="group" aria-label="Switched on right now" hidden></div>
+
+      <div class="grid overview">
+        <div class="stack span2">
+        <div class="card" id="card-players">
           <div class="card-head">
-            <h2>Players online</h2>
-            <span class="muted" id="players-updated"></span>
+            <h2>Players <span class="count" id="players-count"></span></h2>
+            <div class="row tight wrap" id="team-actions" role="group" aria-label="For everyone">
+              <span class="muted small">Everyone</span>
+              <button class="btn small" data-team="heal">Heal</button>
+              <button class="btn small" data-team="kit">Kits</button>
+              <button class="btn small" data-team="ammo">Ammo</button>
+              <button class="btn small" data-team="give">Give…</button>
+              <button class="btn small" data-team="respawn" id="btn-respawn-all">Respawn dead</button>
+            </div>
           </div>
           <div id="players"></div>
           <form id="say-form" class="row">
@@ -70,28 +80,59 @@
           </form>
         </div>
 
-        <div class="card">
-          <h2>How friends join</h2>
-          <p class="muted">Type these in the game console (~).</p>
-          <pre id="join" class="code"></pre>
-          <button class="btn small" id="btn-copy-join">Copy</button>
+        <div class="card" id="card-activity">
+          <h2>Recent activity</h2>
+          <ul class="activity" id="activity"></ul>
+        </div>
         </div>
 
-        <div class="card">
-          <h2>Machine</h2>
-          <div class="meter"><div class="meter-head"><span>CPU load</span><span id="m-load-text"></span></div><div class="bar"><i id="m-load"></i></div></div>
-          <div class="meter"><div class="meter-head"><span>Memory</span><span id="m-mem-text"></span></div><div class="bar"><i id="m-mem"></i></div></div>
-          <div class="meter"><div class="meter-head"><span>Disk</span><span id="m-disk-text"></span></div><div class="bar"><i id="m-disk"></i></div></div>
+        <div class="stack">
+          <div class="card" id="card-session">
+            <h2>This session</h2>
+            <div class="presets">
+              <span class="muted small" id="presets-label">Presets</span>
+              <div class="filters" id="presets" role="group" aria-labelledby="presets-label"></div>
+            </div>
+            <div class="switches" id="switches"></div>
+            <label>Survivor team
+              <select id="team-size" aria-describedby="team-note"></select>
+            </label>
+            <p class="muted small" id="team-note"></p>
+          </div>
+
+          <div class="card" id="card-join">
+            <div class="card-head">
+              <h2>How friends join</h2>
+              <button class="btn small" id="btn-copy-join">Copy</button>
+            </div>
+            <pre id="join" class="code"></pre>
+            <p class="muted small">Typed in the game console (~ key).</p>
+          </div>
+
+          <div class="card" id="card-machine">
+            <h2>Machine</h2>
+            <div class="meter"><div class="meter-head"><span>CPU load</span><span id="m-load-text"></span></div><div class="bar"><i id="m-load"></i></div></div>
+            <div class="meter"><div class="meter-head"><span>Memory</span><span id="m-mem-text"></span></div><div class="bar"><i id="m-mem"></i></div></div>
+            <div class="meter"><div class="meter-head"><span>Disk</span><span id="m-disk-text"></span></div><div class="bar"><i id="m-disk"></i></div></div>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- ---------------------------------------------------------- maps -->
-    <section id="tab-maps" class="tab" hidden>
+    <section id="tab-maps" class="tab" role="tabpanel" aria-labelledby="tabbtn-maps" hidden>
       <div class="card">
         <div class="card-head">
           <h2>Campaigns</h2>
           <span class="muted">Now playing: <b id="maps-current">–</b> · Starts on: <b id="maps-default">–</b></span>
+        </div>
+        <div class="toolbar">
+          <div class="filters" id="map-filters" role="group" aria-label="Show campaigns">
+            <button class="btn small" data-filter="all" aria-pressed="true">All <span class="count"></span></button>
+            <button class="btn small" data-filter="custom" aria-pressed="false">Custom <span class="count"></span></button>
+            <button class="btn small" data-filter="official" aria-pressed="false">Official <span class="count"></span></button>
+          </div>
+          <input id="map-search" type="search" placeholder="Search campaigns…" aria-label="Search campaigns" autocomplete="off">
         </div>
         <div id="campaigns" class="campaigns"></div>
       </div>
@@ -110,16 +151,18 @@
           <p class="muted small">Installed maps load after a restart. Everyone who joins needs the same maps.</p>
         </div>
         <div class="card">
-          <h2>Links for friends</h2>
-          <p class="muted">Friends must subscribe to each map before joining.</p>
+          <div class="card-head">
+            <h2>Links for friends</h2>
+            <button class="btn small" id="btn-copy-share">Copy</button>
+          </div>
           <pre id="share" class="code"></pre>
-          <button class="btn small" id="btn-copy-share">Copy</button>
+          <p class="muted small">Friends must subscribe to each map before joining.</p>
         </div>
       </div>
     </section>
 
     <!-- ------------------------------------------------------ settings -->
-    <section id="tab-settings" class="tab" hidden>
+    <section id="tab-settings" class="tab" role="tabpanel" aria-labelledby="tabbtn-settings" hidden>
       <div class="grid">
         <form id="settings-form" class="card span2">
           <h2>Server settings</h2>
@@ -147,25 +190,14 @@
             </div>
           </div>
           <div class="row end">
-            <span class="muted" id="settings-note"></span>
-            <button class="btn primary" type="submit">Save settings</button>
+            <span class="muted small" id="settings-note" role="status" tabindex="-1"></span>
+            <button class="btn" type="button" id="btn-settings-reset" hidden>Discard</button>
+            <button class="btn primary" type="submit" id="btn-settings-save">Save settings</button>
           </div>
         </form>
 
         <div class="card">
-          <h2>Live toggles</h2>
-          <label class="switch">
-            <input type="checkbox" id="cheats">
-            <span>Cheats (sv_cheats)</span>
-          </label>
-          <p class="muted small">Applies immediately and lasts until the server restarts.</p>
-          <label class="switch">
-            <input type="checkbox" id="tankrun" aria-describedby="tankrun-note">
-            <span>Tank run</span>
-          </label>
-          <p class="muted small" id="tankrun-note"></p>
-
-          <h2 class="gap">Co-op player slots</h2>
+          <h2>Co-op player slots</h2>
           <div class="row">
             <select id="slots" aria-label="Player slots"></select>
             <button class="btn" id="btn-slots">Apply</button>
@@ -183,7 +215,7 @@
         <p class="muted" id="raw-path"></p>
         <textarea id="raw-text" spellcheck="false" rows="18" aria-label="server.cfg"></textarea>
         <div class="row end">
-          <label class="switch"><input type="checkbox" id="raw-apply" checked><span>Apply to the running server now</span></label>
+          <label class="switch"><input type="checkbox" role="switch" id="raw-apply" checked><span>Apply to the running server now</span></label>
           <button class="btn" id="btn-raw-reload" type="button">Reload</button>
           <button class="btn primary" id="btn-raw-save" type="button">Save server.cfg</button>
         </div>
@@ -191,24 +223,27 @@
     </section>
 
     <!-- ------------------------------------------------------- console -->
-    <section id="tab-console" class="tab" hidden>
+    <section id="tab-console" class="tab" role="tabpanel" aria-labelledby="tabbtn-console" hidden>
       <div class="card">
         <h2>Console</h2>
-        <pre id="rcon-out" class="code tall" aria-live="polite"></pre>
+        <div class="quick" id="rcon-quick" role="group" aria-label="Common commands"></div>
+        <pre id="rcon-out" class="code grows" aria-live="polite" data-empty="What the server answers shows up here. Try: status"></pre>
         <form id="rcon-form" class="row">
-          <input id="rcon-cmd" maxlength="500" placeholder="Console command, e.g. status" autocomplete="off" spellcheck="false" aria-label="Console command">
+          <input id="rcon-cmd" maxlength="500" placeholder="Console command, e.g. status (↑ for earlier ones)" autocomplete="off" spellcheck="false" aria-label="Console command">
           <button class="btn primary" type="submit">Run</button>
         </form>
       </div>
       <div class="card">
         <div class="card-head">
           <h2>Server log</h2>
-          <span class="row tight">
-            <label class="switch"><input type="checkbox" id="log-follow" checked><span>Follow</span></label>
+          <span class="row tight wrap">
+            <input id="log-search" type="search" placeholder="Search the log…" aria-label="Search the log" autocomplete="off">
+            <label class="switch"><input type="checkbox" role="switch" id="log-errors"><span>Problems only</span></label>
+            <label class="switch"><input type="checkbox" role="switch" id="log-follow" checked><span>Follow</span></label>
             <button class="btn small" id="btn-log-refresh">Refresh</button>
           </span>
         </div>
-        <pre id="log-out" class="code tall"></pre>
+        <pre id="log-out" class="code tall" tabindex="0" aria-label="Server log"></pre>
       </div>
     </section>
   </main>
@@ -222,10 +257,11 @@
   </aside>
 </div>
 
-<dialog id="confirm">
+<dialog id="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-text">
   <form method="dialog">
     <h2 id="confirm-title"></h2>
     <p id="confirm-text" class="muted"></p>
+    <label id="confirm-choose" hidden><span id="confirm-choose-label"></span><select id="confirm-select"></select></label>
     <label id="confirm-extra" class="switch" hidden><input type="checkbox" id="confirm-check"><span id="confirm-check-label"></span></label>
     <div class="row end">
       <button class="btn" value="cancel">Cancel</button>
@@ -234,7 +270,19 @@
   </form>
 </dialog>
 
-<div id="toasts" aria-live="polite"></div>
+<dialog id="give" aria-labelledby="give-title">
+  <div class="give">
+    <div class="card-head">
+      <h2 id="give-title"></h2>
+      <button class="btn small ghost" id="give-close" type="button">Close</button>
+    </div>
+    <input id="give-search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off">
+    <div id="give-items" class="give-items"></div>
+    <p id="give-status" class="give-status muted small" role="status" aria-live="polite"></p>
+  </div>
+</dialog>
+
+<div id="toasts"></div>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -30,6 +30,7 @@ _DRAIN_TIMEOUT = 0.35
 # (sv_rcon_banpenalty minutes), so never hammer a rejected password.
 AUTH_COOLDOWN = 600
 _auth_blocked_until = 0.0
+_auth_rejected = None       # the password that was refused: a different one may try at once
 
 
 class RconError(Exception):
@@ -87,8 +88,8 @@ class RconClient:
 
     # ------------------------------------------------------------ public API
     def connect(self):
-        global _auth_blocked_until
-        if time.time() < _auth_blocked_until:
+        global _auth_blocked_until, _auth_rejected
+        if self.password == _auth_rejected and time.time() < _auth_blocked_until:
             remaining = int(_auth_blocked_until - time.time())
             raise RconAuthError(
                 f"RCON password was rejected; not retrying for another {remaining}s "
@@ -109,6 +110,7 @@ class RconClient:
                 continue
             if packet_id == -1:
                 _auth_blocked_until = time.time() + AUTH_COOLDOWN
+                _auth_rejected = self.password
                 self.close()
                 raise RconAuthError("RCON password rejected by the server.")
             return self
@@ -214,6 +216,12 @@ def execute(cmd, password, host="127.0.0.1", port=27015, timeout=8.0):
 
 
 _MAX_CFG_BYTES = 256 * 1024
+
+
+def forget_rejection():
+    """Lift the cooldown: the game server restarted, so the same password may be right now."""
+    global _auth_blocked_until, _auth_rejected
+    _auth_blocked_until, _auth_rejected = 0.0, None
 
 
 def parse_password(text):

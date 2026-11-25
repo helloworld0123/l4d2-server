@@ -164,7 +164,11 @@ def cmd_changemap(ctx, args, msg):
                      f"Switching to {name} and making it the default")
         else:
             ok, out = ctx.try_rcon(f"changelevel {name}")
-            ctx.send(f"Switching to {name}..." if ok else f"Couldn't switch map.\n{out}")
+            if ok and "changelevel failed" in out.lower():
+                ctx.send(f"The game can't find {name}. A map that was just installed only loads "
+                         "after a restart: /restart")
+            else:
+                ctx.send(f"Switching to {name}..." if ok else f"Couldn't switch map.\n{out}")
 
     _disruptive(ctx, msg["from"]["id"], f"Change map to {name}", go)
 

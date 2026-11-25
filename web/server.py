@@ -9,6 +9,7 @@ import http.cookies
 import ipaddress
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -59,7 +60,8 @@ class App:
 
 def _first_word(command):
     """For the audit log: the command name only, never its arguments (passwords)."""
-    return (command or "").strip().split(" ")[0][:40]
+    match = re.match(r"[A-Za-z0-9_]{1,40}", (command or "").strip())
+    return match.group(0) if match else "?"
 
 
 # Route tables: path -> function(panel, body_or_query) returning a JSON-able dict.
@@ -76,6 +78,13 @@ POST_ROUTES = {
     "/api/map": (lambda p, b: p.change_map(b.get("name"), bool(b.get("default"))), lambda b: b.get("name")),
     "/api/kick": (lambda p, b: p.kick(b.get("userid"), b.get("reason") or ""), lambda b: b.get("userid")),
     "/api/tankrun": (lambda p, b: p.tank_run(b.get("on")), lambda b: "on" if b.get("on") is True else "off"),
+    "/api/survivor": (lambda p, b: p.survivor_action(b.get("action"), b.get("target"), b.get("item")),
+                      lambda b: f"{b.get('action')} {b.get('target')}"),
+    "/api/reverseff": (lambda p, b: p.reverse_ff(b.get("on")), lambda b: "on" if b.get("on") is True else "off"),
+    "/api/ammo": (lambda p, b: p.infinite_ammo(b.get("on")), lambda b: "on" if b.get("on") is True else "off"),
+    "/api/loot": (lambda p, b: p.double_loot(b.get("on")), lambda b: "on" if b.get("on") is True else "off"),
+    "/api/survivors": (lambda p, b: p.team_size(b.get("size")), lambda b: b.get("size")),
+    "/api/preset": (lambda p, b: p.preset(b.get("name")), lambda b: b.get("name")),
     "/api/say": (lambda p, b: p.say(b.get("text")), lambda b: ""),
     "/api/rcon": (lambda p, b: p.console(b.get("command")), lambda b: _first_word(b.get("command"))),
     "/api/maps/add": (lambda p, b: p.add_maps(b.get("links")), lambda b: b.get("links")),
@@ -83,7 +92,7 @@ POST_ROUTES = {
     "/api/maps/update": (lambda p, b: p.update_maps(), lambda b: ""),
     "/api/slots": (lambda p, b: p.set_slots(b.get("slots")), lambda b: b.get("slots")),
     "/api/settings": (lambda p, b: p.save_settings(b), lambda b: ", ".join(sorted(b))),
-    "/api/config": (lambda p, b: p.save_raw_config(b.get("text"), bool(b.get("apply"))), lambda b: ""),
+    "/api/config": (lambda p, b: p.save_raw_config(b.get("text"), bool(b.get("apply")), b.get("base")), lambda b: ""),
 }
 
 
