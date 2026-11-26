@@ -191,7 +191,7 @@ Admins also get these chat commands (each works in the game console too, as
 | `!mode [coop\|realism\|mutation4\|...]` | Changes game mode, then reloads the map. No name: a menu of modes; other mutations work by number (`!mode mutation12`). Lasts until the server restarts. |
 | `!restartmap` | Restarts the current chapter. |
 | `!tank`, `!witch`, `!horde` | Spawns one now. |
-| `!tankrun [on\|off]` | Tank run: tanks keep coming until the map ends. `l4d2_extras_tankrun_interval` (25 s) and `l4d2_extras_tankrun_max` (2 at once) tune it. The [web panel](#web-panel) has a switch for it too. |
+| `!tankrun [on\|off]` | Tank run: tanks keep coming, map after map, until it's turned off or the server restarts. On each new map, and after a wipe, they start again once someone leaves the safe room. `l4d2_extras_tankrun_interval` (25 s) and `l4d2_extras_tankrun_max` (2 at once) tune it. The [web panel](#web-panel) has a switch for it too. |
 | `!survivors <number>` | Survivor team size, from 4 up to your player slots. Bots fill the seats nobody plays, so `!survivors 8` with one player gives 7 bots. Extra bots take a survivor the team doesn't have yet (Bill, Zoey, Francis, Louis), so they can be told apart. Lasts until the server restarts. The [web panel](#web-panel) has a picker for it too. |
 | `!reverseff [on\|off]` | Reverse friendly fire: whoever shoots a teammate takes the damage instead. Lasts until the server restarts (see [Extra plugins](#extra-plugins)). The [web panel](#web-panel) has a switch for it too. |
 | `!give <item> [who]` | Gives a weapon or item: `rifle_ak47`, `autoshotgun`, `sniper_military`, `katana`, `molotov`, `pipe_bomb`, `defibrillator`, `adrenaline` and so on. `!give` alone lists the common ones. |
@@ -301,8 +301,8 @@ The game mode list has co-op, realism and versus, plus the same mutations as
 the in-game `!mode` menu (Hard Eight, Headshot!, Bleed Out, Ironman, Hunting
 Party, Special Delivery, Death's Door).
 
-The **Tank run** switch (Overview tab, under This session) does what `!tankrun` does in game: tanks keep coming
-until the map ends. It needs the admin extras plugin from
+The **Tank run** switch (Overview tab, under This session) does what `!tankrun` does in game: tanks keep coming,
+map after map, until you turn it off or the server restarts. It needs the admin extras plugin from
 [In-game admins](#in-game-admins), so it is greyed out on a server that never
 had more than four player slots. On a server set up before this switch existed,
 run `sudo bash l4d2-setup.sh --upgrade`, then `l4d2 slots <your number>` again,

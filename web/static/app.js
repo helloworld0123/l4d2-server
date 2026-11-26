@@ -26,7 +26,7 @@ const TEAM_NOTE = "Bots fill the seats nobody plays. Now, until the server resta
 // The session switches. key is the overview's name for the state: null there
 // means the server can't do it, false/true that it is off/on.
 const SWITCHES = [
-  { key: "tank_run", label: "Tank run", note: "Tanks keep coming.", when: "Now, until the map ends",
+  { key: "tank_run", label: "Tank run", note: "Tanks keep coming.", when: "Now, until you turn it off or the server restarts",
     set: (on) => api("/api/tankrun", { on }) },
   { key: "double_loot", label: "Double loot", note: "Twice the pills, throwables, ammo and special weapons.", when: "From the next map, until the server restarts",
     set: (on) => api("/api/loot", { on }) },

@@ -10,7 +10,7 @@
  *   !mode [name]            co-op, realism or a mutation, then reloads the map
  *   !restartmap             restart the current chapter
  *   !tank  !witch  !horde   spawn one now
- *   !tankrun [on|off]       keep tanks coming until the map ends
+ *   !tankrun [on|off]       keep tanks coming, map after map, until turned off
  *   !survivors <number>     survivor team size; bots fill the empty seats
  *   !reverseff [on|off]     friendly fire hurts the shooter, not the teammate
  *   !give <item> [who]      a weapon or item: rifle_ak47, katana, molotov...
@@ -116,7 +116,11 @@ ConVar g_hTankRunInterval;
 ConVar g_hTankRunMax;
 ConVar g_hTankRunState;
 Handle g_hTankRunTimer;
+// A tank run lasts across map changes until it is turned off or the server
+// restarts. On each map (and after a wipe) the tanks wait until a survivor
+// has left the safe room, so nobody gets a tank on top of them while loading.
 bool g_bTankRun;
+bool g_bLeftStart;
 
 // Survivor team size asked for with !survivors (0: never asked). MultiSlots
 // owns the team: it kicks bots above its "min survivors" and its config puts
@@ -144,6 +148,7 @@ ConVar g_hNextCampaignDelay;
 
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
+	g_bLeftStart = late;   // loaded mid-game: the survivors are most likely out already
 	MarkNativeAsOptional("CreateSurvivorBot");
 	MarkNativeAsOptional("L4D_RespawnPlayer");
 	MarkNativeAsOptional("L4D_GetGameModeType");
@@ -158,7 +163,7 @@ public void OnPluginStart()
 	g_hTankRunMax = CreateConVar("l4d2_extras_tankrun_max", "2", "Tank run: most tanks alive at once.", _, true, 1.0, true, 8.0);
 	// Follows the tank run, so the web panel can read whether one is on; setting
 	// it does the same as sm_tankrun on/off.
-	g_hTankRunState = CreateConVar("l4d2_extras_tankrun", "0", "Tank run on this map: 1 = on, 0 = off.", _, true, 0.0, true, 1.0);
+	g_hTankRunState = CreateConVar("l4d2_extras_tankrun", "0", "Tank run: 1 = on, 0 = off. Lasts across maps until turned off or the server restarts.", _, true, 0.0, true, 1.0);
 	g_hTankRunState.AddChangeHook(OnTankRunStateChanged);
 	g_hTankRunState.SetBool(false);   // a reloaded plugin starts with no tank run, whatever the cvar kept
 	// Follows !survivors, so the web panel can read the team size; setting it
@@ -170,6 +175,8 @@ public void OnPluginStart()
 	g_hNextCampaign = CreateConVar("l4d2_extras_nextcampaign", "1", "After a co-op finale is won: 1 = load the next official campaign, 0 = do nothing.", _, true, 0.0, true, 1.0);
 	g_hNextCampaignDelay = CreateConVar("l4d2_extras_nextcampaign_delay", "15", "Seconds between winning a finale and loading the next campaign.", _, true, 3.0, true, 120.0);
 	HookEvent("finale_win", Event_FinaleWin, EventHookMode_PostNoCopy);
+	HookEvent("round_start", Event_RoundStart, EventHookMode_PostNoCopy);
+	HookEvent("player_left_start_area", Event_LeftStartArea, EventHookMode_PostNoCopy);
 
 	if (g_hDifficulty != null)
 	{
@@ -183,7 +190,7 @@ public void OnPluginStart()
 	RegAdminCmd("sm_tank", Command_Tank, ADMFLAG_CHEATS, "Spawn a tank.");
 	RegAdminCmd("sm_witch", Command_Witch, ADMFLAG_CHEATS, "Spawn a witch.");
 	RegAdminCmd("sm_horde", Command_Horde, ADMFLAG_CHEATS, "Call a horde.");
-	RegAdminCmd("sm_tankrun", Command_TankRun, ADMFLAG_CHEATS, "sm_tankrun [on|off] - keep tanks coming until the map ends.");
+	RegAdminCmd("sm_tankrun", Command_TankRun, ADMFLAG_CHEATS, "sm_tankrun [on|off] - keep tanks coming, map after map, until turned off.");
 	LoadTranslations("common.phrases");   // the "no matching client" replies
 	HookEvent("player_spawn", Event_PlayerSpawn);
 	RegAdminCmd("sm_give", Command_Give, ADMFLAG_CHEATS, "sm_give <item> [who] - give a weapon or item.");
@@ -230,11 +237,11 @@ void OnDifficultyChanged(ConVar convar, const char[] oldValue, const char[] newV
 public void OnMapEnd()
 {
 	g_bConfigsRunning = true;
-	// A tank run is for one map. The timer was created with
-	// TIMER_FLAG_NO_MAPCHANGE, so it is already gone; just forget it.
-	g_bTankRun = false;
+	// The tank run stays on (g_bTankRun), but its timer was created with
+	// TIMER_FLAG_NO_MAPCHANGE and is already gone; it starts again once the
+	// survivors leave the safe room on the next map.
 	g_hTankRunTimer = null;
-	g_hTankRunState.SetBool(false);
+	g_bLeftStart = false;
 	g_hTeamTimer = null;           // same: gone with the map
 }
 
@@ -638,15 +645,48 @@ void SetTankRun(bool on)
 	g_bTankRun = on;
 	g_hTankRunState.SetBool(on);   // its hook calls back here and stops at the check above
 	delete g_hTankRunTimer;
-	if (on)
+	if (!on)
 	{
-		g_hTankRunTimer = CreateTimer(g_hTankRunInterval.FloatValue, Timer_TankRun, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+		PrintToChatAll("%sTank run OFF.", TAG);
+		return;
+	}
+	if (g_bLeftStart)
+	{
+		StartTankRunTimer();
 		Spawn(0, "tank auto");
-		PrintToChatAll("%sTank run ON: tanks keep coming until this map ends. (!tankrun off to stop)", TAG);
+		PrintToChatAll("%sTank run ON: tanks keep coming, map after map, until it's turned off. (!tankrun off to stop)", TAG);
 	}
 	else
 	{
-		PrintToChatAll("%sTank run OFF.", TAG);
+		PrintToChatAll("%sTank run ON: tanks start once you leave the safe room, and keep coming map after map until it's turned off. (!tankrun off to stop)", TAG);
+	}
+}
+
+void StartTankRunTimer()
+{
+	delete g_hTankRunTimer;
+	g_hTankRunTimer = CreateTimer(g_hTankRunInterval.FloatValue, Timer_TankRun, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+}
+
+/** A new map or a restarted round (a wipe): wait for the survivors to leave the safe room again. */
+void Event_RoundStart(Event event, const char[] name, bool dontBroadcast)
+{
+	g_bLeftStart = false;
+	delete g_hTankRunTimer;
+}
+
+void Event_LeftStartArea(Event event, const char[] name, bool dontBroadcast)
+{
+	if (g_bLeftStart)
+	{
+		return;
+	}
+	g_bLeftStart = true;
+	if (g_bTankRun)
+	{
+		// The first tank comes one interval after leaving, not the moment the door opens.
+		StartTankRunTimer();
+		PrintToChatAll("%sTank run is on: tanks incoming.", TAG);
 	}
 }
 
@@ -1256,7 +1296,7 @@ Action Command_Extras(int client, int args)
 	menu.AddItem("sm_tank", "Spawn a tank");
 	menu.AddItem("sm_witch", "Spawn a witch");
 	menu.AddItem("sm_horde", "Call a horde");
-	menu.AddItem("sm_tankrun", g_bTankRun ? "Tank run: turn OFF" : "Tank run: turn ON (this map)");
+	menu.AddItem("sm_tankrun", g_bTankRun ? "Tank run: turn OFF" : "Tank run: turn ON (until turned off)");
 	ConVar reverse = FindConVar("reverseff_enabled");
 	if (reverse != null)
 	{

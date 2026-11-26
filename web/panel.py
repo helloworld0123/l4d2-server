@@ -781,7 +781,7 @@ class Panel:
 
     @_one_at_a_time
     def tank_run(self, on):
-        """Start or stop a tank run: tanks keep coming until the map ends."""
+        """Start or stop a tank run: tanks keep coming, map after map, until it is turned off."""
         if not isinstance(on, bool):
             raise PanelError("Say whether the tank run should be on or off.")
         # Asked fresh rather than from the cache: the plugin may have just been
@@ -797,7 +797,7 @@ class Panel:
             raise PanelError("The admin extras plugin isn't loaded, so the tank run can't be switched. "
                              "Restart the server, or update the game files to refresh the mods.", 409)
         self.record(f"Tank run {'on' if on else 'off'}")
-        return {"message": "Tank run on: tanks keep coming until this map ends." if on else "Tank run off."}
+        return {"message": "Tank run on: tanks keep coming, map after map, until you turn it off." if on else "Tank run off."}
 
     def survivor_action(self, action, target, item=None):
         """Heal, equip or bring back one survivor (by userid) or all of them."""

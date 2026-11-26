@@ -59,7 +59,7 @@ def cvar_reply(text):
     state = GAME["tank_run"]
     tank = ('Unknown command "l4d2_extras_tankrun"\n' if state is None else
             f'"l4d2_extras_tankrun" = "{int(state)}" ( def. "0" ) min. 0.000000 max. 1.000000\n'
-            " - Tank run on this map: 1 = on, 0 = off.\n")
+            " - Tank run: 1 = on, 0 = off. Lasts across maps until turned off or the server restarts.\n")
     if GAME["team"] is None:
         team = 'Unknown command "l4d2_extras_survivors"\nUnknown command "l4d_multislots_max_survivors"\n'
     else:
