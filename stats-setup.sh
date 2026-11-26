@@ -369,7 +369,7 @@ if [[ -n "$TOKEN" ]]; then
   if ! command -v cloudflared >/dev/null 2>&1; then
     echo "Installing cloudflared from Cloudflare's package repository..."
     # Cloudflare's documented steps for any Debian-based system (pkg.cloudflare.com).
-    { mkdir -p --mode=0755 /usr/share/keyrings \
+    { install -d -m 0755 /usr/share/keyrings \
       && curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg \
       && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
            >/etc/apt/sources.list.d/cloudflared.list \
