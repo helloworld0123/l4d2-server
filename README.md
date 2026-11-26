@@ -387,6 +387,102 @@ sudo bash web-panel-setup.sh --uninstall
 The panel and the Telegram bot can run side by side. If one of them is in the
 middle of a map install or an update, the other is told the server is busy.
 
+## Public stats site
+
+A public page with your server's leaderboard, player pages, records (best
+single chapter, all-time leaders, fastest clears) and map stats. It is
+read-only, with no sign-in and nothing on it that can change the server, so it
+can face the internet while the admin panel stays private.
+
+The numbers come from `l4d2_stats`, one of this project's SourceMod plugins. It
+records every human survivor by SteamID64 (a new name keeps the same record),
+one row per player per chapter attempt, in
+`left4dead2/addons/sourcemod/data/sqlite/l4d2_stats.sq3`. Bots aren't counted,
+and neither is what a bot does while its player is idle. History starts when
+the plugin is installed: nothing from before then can be recovered.
+
+**Points.** Each chapter scores kills (1 per common, 5 per special, 15 per
+witch, 10 for finishing a tank plus 1 per 50 tank damage), teamwork (10 per
+teammate healed, 8 per revive, 12 per defib, 6 per closet rescue; items passed
+are counted but earn nothing, since two players could pass the same pills back
+and forth) and survival (25 for the saferoom, 75 more for a finale), minus
+friendly fire (1 per 2 damage), going down (5) and dying (20). The total is
+multiplied by the difficulty: Easy ×0.5, Normal ×1, Advanced ×1.5, Expert ×2,
+using the easiest setting seen during the chapter. The formula lives in the
+plugin's `scored` view, so changing it re-scores the whole history.
+
+**Ranked vs. all games.** A chapter is *boosted* when cheats, infinite ammo, a
+tank run or double loot were on, or an admin handed out items, health, a
+respawn or extra infected (from the panel or in game). Rankings leave boosted
+chapters out; a checkbox on the site shows everything.
+
+Players can check their own place in game:
+
+| Chat | Does |
+|---|---|
+| `!rank` | Your place in the rankings and your points |
+| `!top` | The five best players |
+| `!stats` | Your own totals |
+
+### Setting it up
+
+```bash
+sudo bash l4d2-setup.sh --upgrade   # installs the plugin source
+sudo l4d2 update                    # builds and installs it (needs SourceMod)
+sudo bash stats-setup.sh
+```
+
+The plugin needs SourceMod, which comes with the mods for more than four
+players. A server that has always had four slots doesn't have it yet: run
+`sudo l4d2 slots 5` once to install it (`sudo l4d2 slots 4` afterwards keeps
+SourceMod and the plugin). The plugin loads on the next map change or restart.
+
+`stats-setup.sh` asks for:
+
+- **A Steam Web API key** (optional, free at
+  <https://steamcommunity.com/dev/apikey>). With one, the site adds Steam
+  avatars and, for players whose Steam game details are public, their total
+  L4D2 hours and achievements. These are lifetime figures from everywhere they
+  play, shown on their player page only; rankings always use this server's
+  games. Steam is asked in the background a few times a day, never while a
+  visitor waits, and the key is never sent to visitors.
+- **Players to hide**, by SteamID64, for anyone who asks to be left off. Their
+  name, page, rankings, records and presence (online now, recent games, map
+  stats) leave the site, as do chapters only they played. In game, `!top` and
+  `!rank` still include them.
+- **The public address**, shown to players after `!rank`.
+- **A Cloudflare Tunnel** to publish it. The site only listens on
+  `127.0.0.1`; `cloudflared` connects out to Cloudflare, so no router port is
+  opened and your home address stays hidden. In the Cloudflare dashboard:
+  *Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared*, copy the
+  token from the install command (don't run that command), then add a public
+  hostname such as `stats.example.com` pointing to `HTTP` `localhost:8090`.
+  Setup installs `cloudflared` from Cloudflare's apt repository and runs it as
+  its own service with the token kept in a root-only file.
+
+The site's service runs as a throwaway user of its own (systemd's
+`DynamicUser`), not as the game user, and sees only the stats folder and
+`maps.json`, read-only. `server.cfg` with its RCON password, the rest of the
+game folder and the game process are out of its reach, and the game user can't
+read the site's Steam key. A small watcher (`l4d2-stats-maps.path`) restarts
+the site when `l4d2 addmap` changes `maps.json`, so new campaigns show their
+names.
+
+An empty server hibernates and stops its timers, so the plugin saves when the
+last player leaves; the site then shows nobody playing until someone joins.
+The 7- and 30-day boards go by when a chapter ended.
+
+### Managing the stats site
+
+```bash
+systemctl status l4d2-stats l4d2-stats-tunnel l4d2-stats-maps.path
+journalctl -u l4d2-stats -f
+sudo bash stats-setup.sh               # Steam key, hidden players, tunnel
+sudo bash stats-setup.sh --uninstall   # removes the site; the stats are kept
+```
+
+To start the stats over, stop the server and delete `l4d2_stats.sq3`.
+
 ## Custom maps
 
 ### Adding maps
@@ -571,14 +667,22 @@ To keep it that way:
 | `/etc/l4d2-web.env` | Panel address, port and password hash (mode 600) |
 | `/etc/systemd/system/l4d2-web.service` | Panel service definition |
 | `/var/log/l4d2-web-setup.log` | Panel setup log |
+| `/home/l4d2/l4d2server/left4dead2/addons/sourcemod/data/sqlite/l4d2_stats.sq3` | Player stats recorded by `l4d2_stats` |
+| `/opt/l4d2-stats/` | Stats site code |
+| `/etc/l4d2-stats.env` | Stats site settings and Steam Web API key (mode 600) |
+| `/etc/l4d2-stats-tunnel.env` | Cloudflare Tunnel token (mode 600) |
+| `/etc/systemd/system/l4d2-stats.service`, `l4d2-stats-tunnel.service`, `l4d2-stats-maps.path` | Stats site, tunnel and `maps.json` watcher |
+| `/var/lib/private/l4d2-stats/` | Cached Steam profile details |
+| `/var/log/l4d2-stats-setup.log` | Stats site setup log |
 
 ## Uninstalling
 
-If you installed the Telegram bot or the web panel, remove them first:
+If you installed the Telegram bot, the web panel or the stats site, remove them first:
 
 ```bash
 sudo bash telegram-bot-setup.sh --uninstall
 sudo bash web-panel-setup.sh --uninstall
+sudo bash stats-setup.sh --uninstall
 ```
 
 Then the server itself:

@@ -146,6 +146,11 @@ int g_iWantedReverseFF = -1;
 ConVar g_hNextCampaign;
 ConVar g_hNextCampaignDelay;
 
+// Told whenever an admin hands survivors something or spawns extra infected, so
+// the stats plugin can keep that chapter out of the rankings. Any plugin with a
+// public L4D2Extras_OnAdminHelp() gets it; none is needed.
+GlobalForward g_hAdminHelp;
+
 public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
 {
 	g_bLeftStart = late;   // loaded mid-game: the survivors are most likely out already
@@ -159,6 +164,7 @@ public void OnPluginStart()
 {
 	g_hDifficulty = FindConVar("z_difficulty");
 	g_hGameMode = FindConVar("mp_gamemode");
+	g_hAdminHelp = new GlobalForward("L4D2Extras_OnAdminHelp", ET_Ignore);
 	g_hTankRunInterval = CreateConVar("l4d2_extras_tankrun_interval", "25", "Tank run: seconds between tank spawns.", _, true, 5.0, true, 300.0);
 	g_hTankRunMax = CreateConVar("l4d2_extras_tankrun_max", "2", "Tank run: most tanks alive at once.", _, true, 1.0, true, 8.0);
 	// Follows the tank run, so the web panel can read whether one is on; setting
@@ -304,7 +310,14 @@ bool Spawn(int client, const char[] what)
 		return false;
 	}
 	CheatCommand(target, "z_spawn_old", what);
+	AdminHelped();
 	return true;
+}
+
+void AdminHelped()
+{
+	Call_StartForward(g_hAdminHelp);
+	Call_Finish();
 }
 
 void ReloadMap(const char[] reason)
@@ -1144,6 +1157,10 @@ int GiveTo(int client, int args, int arg, const char[] item)
 	{
 		GiveItem(found[i], item);
 	}
+	if (count > 0)
+	{
+		AdminHelped();
+	}
 	return count;
 }
 
@@ -1213,6 +1230,7 @@ Action Command_Heal(int client, int args)
 	}
 	if (count > 0)
 	{
+		AdminHelped();
 		PrintToChatAll("%s%d survivor(s) healed.", TAG, count);
 	}
 	return Plugin_Handled;
@@ -1244,6 +1262,7 @@ Action Command_Respawn(int client, int args)
 	}
 	if (count > 0)
 	{
+		AdminHelped();
 		PrintToChatAll("%s%d survivor(s) brought back.", TAG, count);
 	}
 	return Plugin_Handled;

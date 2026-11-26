@@ -1359,8 +1359,10 @@ def switch_slot_plugins(on):
 #   l4d2_admin_extras        Chat commands for admins: !extras, !difficulty,
 #       !mode, !tank, !witch, !horde, !tankrun, !restartmap, !reverseff. Also
 #       loads the next official campaign when a co-op finale is won.
+#   l4d2_stats               Records every player's stats in SQLite for the
+#       public stats site (stats-setup.sh), plus !rank, !top and !stats.
 PLUGIN_SRC = "/usr/local/share/l4d2/plugins"
-OWN_PLUGINS = ("l4d2_precache_survivors", "l4d2_admin_extras")
+OWN_PLUGINS = ("l4d2_precache_survivors", "l4d2_admin_extras", "l4d2_stats")
 
 
 def install_own_plugins():

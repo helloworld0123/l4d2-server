@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Server stats</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <a class="brand" href="#/">
+    <img src="/favicon.svg" alt="" width="28" height="28">
+    <h1 id="title">Server stats</h1>
+  </a>
+  <p class="live" id="live" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="live-text">Checking the server…</span></p>
+</header>
+<nav class="tabs" aria-label="Sections">
+  <a href="#/" data-tab="board">Leaderboard</a>
+  <a href="#/records" data-tab="records">Records</a>
+  <a href="#/maps" data-tab="maps">Maps</a>
+</nav>
+<main id="main" tabindex="-1">
+  <p class="loading" id="loading">Loading…</p>
+  <div id="view"></div>
+</main>
+<footer class="foot">
+  <details>
+    <summary>How points work</summary>
+    <p>Each chapter you play earns points: 1 per common infected, 5 per special,
+    15 per witch, 10 for finishing a tank plus 1 per 50 damage dealt to tanks,
+    10 per teammate healed, 8 per revive, 12 per defib and 6 per closet rescue.
+    Making it to the saferoom adds 25, escaping a finale 75 more.
+    Friendly fire costs 1 per 2 damage, going down 5 and dying 20.</p>
+    <p>The total is then multiplied by the difficulty: Easy ×0.5, Normal ×1,
+    Advanced ×1.5, Expert ×2. If the difficulty changes during a chapter, the
+    easiest setting counts.</p>
+    <p><b>Ranked</b> leaves out "boosted" chapters: ones played with cheats,
+    infinite ammo, a tank run, double loot, or an admin handing out items,
+    health or extra infected. Points per hour need at least an hour played.
+    Bots aren't counted, and neither is what a bot does while you're idle.</p>
+  </details>
+  <p class="muted small" id="foot-note"></p>
+</footer>
+</body>
+</html>
